@@ -1,0 +1,62 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Tests
+        run: python tools/ptest.py
+      - name: Prompt-injection demo is blocked
+        working-directory: examples/injection
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SIPAR_MODEL: mock
+          SIPAR_MOCK_SCRIPT: hijacked_model.json
+        run: |
+          python -m sipar run assistant.sipar 2>&1 | tee out.txt || true
+          grep -q "BLOCKED (taint)" out.txt
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
+      - name: The installed command works outside the checkout
+        working-directory: ${{ runner.temp }}
+        env:
+          SIPAR_MODEL: mock
+          SIPAR_MOCK_SCRIPT: hijacked_model.json
+        run: |
+          venv/bin/sipar --version
+          venv/bin/sipar spec > spec.txt
+          grep -q "^## 6. Information-flow rules" spec.txt
+          cp -r "$GITHUB_WORKSPACE/examples/injection" demo
+          cd demo
+          ../venv/bin/sipar run assistant.sipar 2>&1 | tee out.txt || true
+          grep -q "BLOCKED (taint)" out.txt

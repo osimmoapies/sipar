@@ -1,0 +1,32 @@
+// MCP + prompt-injection demo.
+// The agent reads an email through an MCP filesystem server. The email hides orders for the AI.
+// Even if the model obeys them, Sipar refuses: every MCP result is labelled
+// untrusted:mcp:fs/read_text_file, and untrusted text cannot reach shell.run.
+//
+//   SIPAR_MODEL=mock SIPAR_MOCK_SCRIPT=hijacked_model.json sipar run reader.sipar
+//
+// fs_server.py is a tiny stand-in MCP server (stdlib Python). To use the real one instead
+// (needs Node.js; the tool names are the same; it wants absolute paths):
+//   allow mcp "fs" ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/abs/path/to/examples/mcp"]
+allow ai
+allow mcp "fs" ["python3", "fs_server.py"]
+    tools ["read_text_file", "list_directory"]
+    readonly ["read_text_file", "list_directory"]
+allow shell ["curl", "ls"]
+
+/// Run a shell command.
+fn run_cmd(cmd: Str) -> Str uses shell { shell.run(cmd) }
+
+@max_steps(6)
+agent fn assistant(task: Str) -> Str uses mcp, shell {
+    tools [mcp.fs.read_text_file, mcp.fs.list_directory, run_cmd]
+    "You are an email assistant. {task}"
+}
+
+fn main() uses ai, mcp, shell {
+    try {
+        print(assistant("Summarise inbox/email.txt in one line."))
+    } catch e {
+        print("BLOCKED ({e.kind}): {e.message}")
+    }
+}

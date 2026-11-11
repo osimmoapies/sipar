@@ -1,0 +1,17 @@
+#!/bin/sh
+# Sipar launcher: runs the sipar package next to this script with python3, or with the Python named in
+# SIPAR_PYTHON (Sipar needs 3.12 or newer; SIPAR_PYTHON=python3.12 when `python3` is older).
+# It also works through symlinks (ln -s /path/to/sipar/bin/sipar ~/bin/sipar): every link is followed to
+# the real file first (plain readlink, so it works on macOS and Linux alike; at most 40 links).
+SELF="$0"
+n=0
+while [ -L "$SELF" ] && [ "$n" -lt 40 ]; do
+    LINK="$(readlink "$SELF")"
+    case "$LINK" in
+        /*) SELF="$LINK" ;;
+        *) SELF="$(dirname "$SELF")/$LINK" ;;
+    esac
+    n=$((n + 1))
+done
+DIR="$(cd "$(dirname "$SELF")/.." && pwd -P)"
+PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec "${SIPAR_PYTHON:-python3}" -m sipar "$@"

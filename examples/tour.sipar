@@ -1,0 +1,66 @@
+allow ai
+allow net ["wttr.in"]
+
+/// A code review.
+type Review = { score: Int, verdict: Str, issues: List[Str] }
+enum Mood { happy, sad, neutral }
+enum Action {
+    search(query: Str),
+    answer(text: Str),
+}
+
+let LIMIT = 3
+
+/// Adds two numbers.
+fn add(a: Int, b: Int) -> Int { a + b }
+
+@retries(3) @temperature(0.2)
+ai fn review(code: Str) -> Review {
+    """
+    Review this code and score it 1-10:
+    {code}
+    """
+}
+
+/// Weather for a city.
+fn weather(city: Str) -> Str uses net {
+    http.get("https://wttr.in/{city}?format=3")
+}
+
+@max_steps(5)
+agent fn helper(goal: Str) -> Str uses net {
+    tools [weather, add]
+    "Help with: {goal}"
+}
+
+fn main() uses ai, net {
+    let xs = [1, 2, 3]
+    var total = 0
+    for x in xs { total = total + x }
+    let m = ["a": 1, "b": 2]
+    let big = if total > 5 { "big" } else { "small" }
+    let r = review("x = 1")
+    let label = match r.score {
+        10 => "perfect",
+        n => "score {n}"
+    }
+    let act = Action.search(query: "x")
+    match act {
+        Action.search(q) => print("search {q}")
+        Action.answer(t) => print(t)
+    }
+    let ys = xs
+        .map(fn(x) => x * 2)
+        .filter(fn(x: Int) -> Bool => x > 2)
+    try {
+        budget(ai_calls: 2, seconds: 10) { print(helper("weather in Dushanbe")) }
+    } catch e {
+        print("failed: {e.kind} {e.message}")
+    }
+    print("{label} {big} {ys} {m["a"]} {total as Float}")
+}
+
+test "review mock" {
+    mock review(code) => Review { score: 9, verdict: "ok", issues: [] }
+    assert review("x").score == 9, "mock works"
+}

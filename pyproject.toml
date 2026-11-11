@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sipar"
+dynamic = ["version"]
+description = "A small language for AI agents: data from models, web pages and files is labelled, and labelled data cannot reach a shell command, a file or a URL unchecked."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "osimmoapies" }]
+keywords = ["ai-agents", "prompt-injection", "information-flow-control", "taint-tracking", "llm", "security",
+            "programming-language", "mcp", "capabilities"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Interpreters",
+]
+dependencies = []                       # standard library only
+
+[project.urls]
+Homepage = "https://github.com/osimmoapies/sipar"
+Documentation = "https://github.com/osimmoapies/sipar/blob/main/SPEC.md"
+Issues = "https://github.com/osimmoapies/sipar/issues"
+
+[project.scripts]
+sipar = "sipar.cli:main"
+
+[tool.hatch.version]
+path = "sipar/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sipar"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"SPEC.md" = "sipar/SPEC.md"             # `sipar spec` prints it: the wheel carries a copy inside the package
+
+[tool.hatch.build.targets.sdist]
+include = ["/sipar", "/tests", "/examples", "/docs", "/tools", "/bin", "/editors", "/.github", "/SPEC.md",
+           "/README.md", "/README.ru.md", "/SECURITY.md", "/CONTRIBUTING.md", "/LICENSE-MIT", "/LICENSE-APACHE"]

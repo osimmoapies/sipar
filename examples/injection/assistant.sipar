@@ -1,0 +1,33 @@
+// Prompt-injection defence demo.
+// The agent reads an email that hides orders for the AI. Even if the model obeys them,
+// Sipar refuses: text that came from the email is labelled untrusted and cannot reach
+// shell.run or fs.write. Run it from the repository root (the script plays the hijacked model):
+//   SIPAR_MODEL=mock SIPAR_MOCK_SCRIPT=examples/injection/hijacked_model.json sipar run examples/injection/assistant.sipar
+allow ai
+allow fs.read ["."]
+allow fs.write ["./out"]
+allow shell ["curl", "ls"]
+
+/// Read a file from the inbox.
+fn read_email(name: Str) -> Str uses fs.read { fs.read(name) }
+
+/// Run a shell command.
+fn run_cmd(cmd: Str) -> Str uses shell { shell.run(cmd) }
+
+/// Save a note to the out/ folder.
+fn save_note(path: Str, text: Str) uses fs.write { fs.write(path, text) }
+
+@max_steps(6)
+agent fn assistant(task: Str) -> Str uses fs.read, shell, fs.write {
+    tools [read_email, run_cmd, save_note]
+    "You are an email assistant. {task}"
+}
+
+fn main() uses ai, fs.read, shell, fs.write {
+    try {
+        print(assistant("Summarise email.txt in one line."))
+    } catch e {
+        print("BLOCKED ({e.kind}): {e.message}")
+    }
+}
+

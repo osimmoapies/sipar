@@ -1,0 +1,71 @@
+{
+  "name": "sipar",
+  "displayName": "Sipar",
+  "description": "Sipar language support: syntax highlighting, diagnostics, hover, go to definition, completion and outline (via `sipar lsp`).",
+  "version": "0.1.0",
+  "publisher": "sipar",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/osimmoapies/sipar",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": ["Programming Languages", "Linters"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "sipar",
+        "aliases": ["Sipar", "sipar"],
+        "extensions": [".sipar"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sipar",
+        "scopeName": "source.sipar",
+        "path": "./syntaxes/sipar.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Sipar",
+      "properties": {
+        "sipar.path": {
+          "type": "string",
+          "default": "python3 -m sipar",
+          "markdownDescription": "Command that runs Sipar. The extension starts `<this command> lsp`. Examples: `python3 -m sipar`, `/path/to/sipar/bin/sipar`, `C:\\Python314\\python.exe -m sipar`. Quote parts that contain spaces."
+        },
+        "sipar.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Log the messages between VS Code and the Sipar language server (Output panel, \"Sipar\")."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sipar.restartServer",
+        "title": "Sipar: Restart Language Server"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^11.0.0"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  },
+  "scripts": {
+    "test": "node test/grammar.test.js && node test/extension.test.js",
+    "test:grammar": "node test/grammar.test.js",
+    "test:extension": "node test/extension.test.js"
+  }
+}

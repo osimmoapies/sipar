@@ -1,0 +1,14 @@
+__pycache__/
+.sipar/
+*.pyc
+examples/out/*
+!examples/out/.gitkeep
+.venv-dev/
+.claude/
+research/raw/wave2/
+node_modules/
+*.vsix
+dist/
+CASES_*.md
+PROGRESS.md
+research/

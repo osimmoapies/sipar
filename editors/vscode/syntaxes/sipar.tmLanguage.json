@@ -1,0 +1,193 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sipar",
+  "scopeName": "source.sipar",
+  "fileTypes": ["sipar"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#attribute" },
+    { "include": "#allow" },
+    { "include": "#uses" },
+    { "include": "#declarations" },
+    { "include": "#expression" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.documentation.sipar", "match": "///.*$" },
+        { "name": "comment.line.double-slash.sipar", "match": "//.*$" }
+      ]
+    },
+    "attribute": {
+      "comment": "@model(\"...\"), @retries(3), @temperature(0.2), @system(\"...\"), @max_steps(8)",
+      "match": "(@)\\s*([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.attribute.sipar" },
+        "2": { "name": "entity.name.function.decorator.attribute.sipar" }
+      }
+    },
+    "capability": {
+      "name": "support.constant.capability.sipar",
+      "match": "\\b(?:fs\\.read|fs\\.write|ai|net|shell|env|secret|time|random|io|memory|mcp)\\b"
+    },
+    "allow": {
+      "comment": "allow net [\"example.com\"], allow mcp \"fs\" [...]: the capability right after `allow`",
+      "match": "^\\s*(allow)\\s+(fs\\.read|fs\\.write|ai|net|shell|env|secret|time|random|io|memory|mcp)\\b",
+      "captures": {
+        "1": { "name": "keyword.other.allow.sipar" },
+        "2": { "name": "support.constant.capability.sipar" }
+      }
+    },
+    "uses": {
+      "comment": "fn f() uses net, fs.read { ... }: capabilities up to the body, `=`, `tools` or the end of the line",
+      "begin": "\\b(uses)\\b",
+      "beginCaptures": { "1": { "name": "keyword.other.uses.sipar" } },
+      "end": "(?=[{=;]|\\btools\\b|//)|$",
+      "patterns": [
+        { "include": "#capability" },
+        { "name": "punctuation.separator.comma.sipar", "match": "," }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(?:(ai|agent)\\s+)?(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])",
+          "captures": {
+            "1": { "name": "storage.modifier.sipar" },
+            "2": { "name": "keyword.declaration.function.sipar" },
+            "3": { "name": "entity.name.function.sipar" }
+          }
+        },
+        {
+          "match": "\\b(type|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])",
+          "captures": {
+            "1": { "name": "keyword.declaration.type.sipar" },
+            "2": { "name": "entity.name.type.sipar" }
+          }
+        },
+        {
+          "match": "\\b(test)\\s+(?=\")",
+          "captures": { "1": { "name": "keyword.other.test.sipar" } }
+        }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#triple-string" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#constants" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#modules" },
+        { "include": "#call" },
+        { "include": "#identifier" },
+        { "include": "#operators" },
+        { "include": "#punctuation" },
+        { "include": "#not-ascii" }
+      ]
+    },
+    "triple-string": {
+      "name": "string.quoted.triple.sipar",
+      "begin": "\"\"\"",
+      "end": "\"\"\"",
+      "patterns": [
+        { "include": "#escape" },
+        { "include": "#interpolation" }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.sipar",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [
+        { "include": "#escape" },
+        { "include": "#interpolation" }
+      ]
+    },
+    "escape": {
+      "patterns": [
+        { "name": "constant.character.escape.sipar", "match": "\\\\[ntr0\"\\\\{}]" },
+        { "name": "invalid.illegal.escape.sipar", "match": "\\\\." }
+      ]
+    },
+    "interpolation": {
+      "comment": "\"hello {name}\": the expression between the braces",
+      "name": "meta.interpolation.sipar",
+      "begin": "\\{",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.sipar" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.sipar" } },
+      "contentName": "source.sipar.embedded",
+      "patterns": [
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#constants" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#modules" },
+        { "include": "#call" },
+        { "include": "#operators" },
+        { "include": "#identifier" },
+        { "include": "#not-ascii" }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.sipar",
+      "match": "\\b\\d(?:_?\\d)*(?:\\.\\d(?:_?\\d)*)?(?:[eE][+-]?\\d+)?\\b"
+    },
+    "constants": {
+      "name": "constant.language.sipar",
+      "match": "\\b(?:true|false|none)\\b"
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.sipar", "match": "\\b(?:if|else|while|for|in|match|return|break|continue|try|catch|budget)\\b" },
+        { "name": "keyword.declaration.sipar", "match": "\\b(?:fn|ai|agent|type|enum|let|var)\\b" },
+        { "name": "keyword.other.sipar", "match": "\\b(?:allow|uses|tools|test|mock|assert|as)\\b" },
+        { "comment": "an allow mcp line: readonly [\"tool\", ...] and pin \"sha256:...\" (contextual words)",
+          "name": "keyword.other.sipar", "match": "\\b(?:readonly(?=\\s*\\[\\s*\")|pin(?=\\s*\"))" },
+        { "name": "keyword.operator.logical.sipar", "match": "\\b(?:and|or|not)\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "support.type.builtin.sipar", "match": "\\b(?:Int|Float|Str|Bool|None|List|Map|Error)\\b" },
+        { "name": "variable.other.constant.sipar", "match": "(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]+(?![A-Za-z0-9_])" },
+        { "name": "entity.name.type.sipar", "match": "(?<![A-Za-z0-9_])[A-Z][A-Za-z0-9_]*(?![A-Za-z0-9_])" }
+      ]
+    },
+    "modules": {
+      "name": "support.module.sipar",
+      "match": "\\b(?:env|fs|http|json|mcp|memory|random|shell|time)\\b(?=\\s*\\.)"
+    },
+    "call": {
+      "match": "(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.call.sipar" } }
+    },
+    "identifier": {
+      "name": "variable.other.sipar",
+      "match": "(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])"
+    },
+    "not-ascii": {
+      "comment": "names are ASCII only (SPEC §1): any other character outside a string or comment is an error",
+      "name": "invalid.illegal.character.sipar",
+      "match": "[^\\x00-\\x7F]+"
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.arrow.sipar", "match": "=>|->" },
+        { "name": "keyword.operator.range.sipar", "match": "\\.\\.\\.|\\.\\." },
+        { "name": "keyword.operator.sipar", "match": "\\?\\?|==|!=|<=|>=|[+\\-*/%<>=?]" }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.separator.comma.sipar", "match": "," },
+        { "name": "punctuation.accessor.dot.sipar", "match": "\\." },
+        { "name": "punctuation.separator.colon.sipar", "match": ":" }
+      ]
+    }
+  }
+}
