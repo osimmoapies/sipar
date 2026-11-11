@@ -339,7 +339,7 @@ class CLI(unittest.TestCase):
 
     def test_L5_version(self):
         code, out, err = sh(["--version"])
-        self.assertEqual((code, out.strip()), (0, "sipar 0.1.0"))
+        self.assertEqual((code, out.strip()), (0, "sipar 0.1.1"))
 
     def test_L6_paths_and_cwd(self):
         d, path = self.tmp(name="тест файл.sipar", src='fn main(args: List[Str]) { print("hi {args}") }\n')

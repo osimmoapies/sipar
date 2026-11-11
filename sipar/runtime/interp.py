@@ -472,7 +472,9 @@ class Interp:
             kv = self.eval(k, env)
             if not isinstance(kv, str):
                 raise err("type", f"map keys must be Str, got {kind_of(kv)}", k)
-            d[kv] = self.eval(v, env)
+            # a labelled key is a labelled position, as in `m[k] = v` (SPEC §6): without this `["safe": "ls", k: "id"]`
+            # let a model-chosen key replace the value under a fixed key with an unlabelled one (round 13)
+            d[kv] = label_written(self.eval(v, env), labels_of(kv))
         return d
 
     def e_record(self, n: A.RecordLit, env: Env) -> Any:

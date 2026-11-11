@@ -289,7 +289,8 @@ In `sipar test` memory lives in RAM and starts empty in every test.
   is a read-only copy: changing it (`let g = m[k]; g.push(x)`) is error kind `value` (change it through its
   container, `m[k].push(x)`, which changes the original); a picked record is a view, so `xs[i].f = v` and
   `let t = xs[i]; t.f = v` change the original. A value written at a labelled position (`xs[i] = v`,
-  `m[k] = v`, a field or push through a labelled pick) gets the position's labels (a Str/Int/Float or record;
+  `m[k] = v`, the value under a labelled key in a map literal `[k: v]`, a field or push through a labelled
+  pick) gets the position's labels (a Str/Int/Float or record;
   a list, map or enum with a payload is stored as a copy whose items carry them, so a labelled key cannot pick
   a whole command; structure — which keys exist, list length — is not labelled).
   The same holds for built-ins that pick a value by an argument: `random.int(lo, hi)` carries the labels of

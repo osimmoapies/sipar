@@ -7,7 +7,7 @@ sipar.check_source(src), sipar.CheckError, sipar.SiparError.
 # an old Python gets one clear line instead of a SyntaxError or wrong results (round 10, MED3).
 import sys as _sys
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 _MIN_PYTHON = (3, 12)
 
 
