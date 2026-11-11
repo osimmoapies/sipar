@@ -96,6 +96,14 @@ def f_floor(rt, a):
     return lab(int(math.floor(x)), x)
 
 
+def f_random_int(rt, a):
+    # the bounds go on as they came: _int() returns a plain int, which dropped their labels, so a number a
+    # model chose came back from random.int(n, n) unlabelled (round 12)
+    _int(a["lo"], "random.int")
+    _int(a["hi"], "random.int")
+    return E.random_int(rt, a["lo"], a["hi"])
+
+
 def f_range(rt, a):
     s, e = _int(a["start"], "range"), _int(a["end"], "range")
     if e - s > MAX_ITEMS:
@@ -168,7 +176,7 @@ FUNCS = {
     "env.get": lambda rt, a: E.env_get(rt, a["name"]),
     "env.secret": lambda rt, a: E.env_secret(rt, a["name"]),
     "time.now": lambda rt, a: E.time_now(rt),
-    "random.int": lambda rt, a: E.random_int(rt, _int(a["lo"], "random.int"), _int(a["hi"], "random.int")),
+    "random.int": f_random_int,
     "memory.save": lambda rt, a: M.save(rt, a["key"], a["value"]),
     "memory.load": lambda rt, a: M.load(rt, a["key"], a.get("<type>")),
     "memory.delete": lambda rt, a: M.delete(rt, a["key"]),

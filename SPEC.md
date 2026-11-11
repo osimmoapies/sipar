@@ -292,6 +292,9 @@ In `sipar test` memory lives in RAM and starts empty in every test.
   `m[k] = v`, a field or push through a labelled pick) gets the position's labels (a Str/Int/Float or record;
   a list, map or enum with a payload is stored as a copy whose items carry them, so a labelled key cannot pick
   a whole command; structure — which keys exist, list length — is not labelled).
+  The same holds for built-ins that pick a value by an argument: `random.int(lo, hi)` carries the labels of
+  both bounds (`random.int(n, n)` is `n`), and `env.get(name)` / `env.secret(name)` carry the labels of
+  `name`, as `memory.load(key)` carries the labels of `key`.
   **Decision: choice declassification still applies to selection.** A `Bool`, `none` or payload-free enum
   value picked with a labelled key stays unlabelled. Justification: labelling them would also have to label
   every `if`, `match` and comparison on labelled data (Sipar does not track implicit flows), so it would close

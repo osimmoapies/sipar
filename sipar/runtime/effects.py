@@ -501,7 +501,9 @@ def env_get(rt, name: Any) -> Any:
             raise SiparRuntimeError("taint", f"env.get({str(name)!r}): the variable holds the value of secret "
                                              f"{', '.join(other)}; read it with env.secret")
     v = rt.journal.effect("env.get", {"name": str(name)}, lambda: scrub_text(os.environ.get(str(name))))
-    return mark_secrets(v)
+    # a labelled name picks which variable is read, so the value carries the name's labels (SPEC §6 selection,
+    # as memory.load does; round 12). none stays unlabelled (choice declassification)
+    return with_labels(mark_secrets(v), labels_of(name))
 
 
 SECRET_HASH_ROUNDS = 100_000
@@ -565,7 +567,7 @@ def env_secret(rt, name: Any) -> Any:
     elif v is None:                            # removed from the environment while the effect ran
         raise SiparRuntimeError("io", f"secret {n!r} is not set in the environment")
     rt.journal.add_secret(v, label)
-    return set_labels(v, frozenset({label}))
+    return set_labels(v, frozenset({label}) | labels_of(name))      # plus the labels of a picked name (round 12)
 
 
 def time_now(rt) -> Any:
