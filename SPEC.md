@@ -200,7 +200,7 @@ prompts are escaped the same way, error messages always are, and `approve` reset
 `time.now() -> Float` (time), `random.int(lo, hi) -> Int` (random), `input(prompt) -> Str` (io),
 `json.encode(value) -> Str` (a function value inside is error kind `value`), `trust(value, reason) -> same type`,
 `approve(value, question) -> same type` (io),
-`mcp.call(server, tool, args: Map[Any]) -> Str` (mcp; see §7a), `fail(kind, message)` raises an error.
+`mcp.call(server, tool, args: Map[Any]) -> Str` (mcp; see §7a), `fail(kind, message)` raises an error (an empty or blank kind is reported as `fail`).
 - `env.get` reads only names in `allow env [...]`; `env.secret` reads only names in `allow secret [...]`; `env.get`
   on a name listed in `allow secret` is error kind `capability` (a secret is never read unlabelled).
   `env.get` of a provider API key name (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` — the key
@@ -301,7 +301,8 @@ In `sipar test` memory lives in RAM and starts empty in every test.
   same as one comparison; a leak needs a loop of lookups, the known implicit-flow limitation below. Likewise
   `filter` with a labelled test and loop counts are implicit flows (not labelled).
 - Sinks requiring *no untrusted label*: `shell.run(cmd)`, `fs.write(path, text)`, `http.get(url)`,
-  `http.post(url, body)`.  Violation = runtime error kind `taint` (before the effect happens).
+  `http.post(url, body)` and the `headers:` of both (the map itself, every name, every value).  Violation =
+  runtime error kind `taint` (before the effect happens).
 - Sinks forbidding *secret*: prompts of `ai fn`/`agent fn`, `print`, `fs.write`, `json.encode`, and **every
   parameter of every effectful stdlib function** (paths, URLs, bodies, commands, names, prompts, memory keys
   and values, `approve`, `sleep`, `random`, ...) except the `headers:` values of `http.get/post` — the only
@@ -404,7 +405,11 @@ In `sipar test` memory lives in RAM and starts empty in every test.
   nothing is sent to the new location, so the API key stays with the configured endpoint.
 - `http.get/post` headers: a name must be an RFC 7230 token; a value with CR, LF, NUL or another control
   character (C0 except TAB, DEL, C1) or a character outside Latin-1 is error kind `value` before anything is
-  sent. The message names the header and never quotes the value.
+  sent. The message names the header and never quotes the value. `Host`, `Content-Length` and
+  `Transfer-Encoding` are written by the runtime from the URL and the body: a program that sets one gets error
+  kind `value`.
+- A URL with a user name or password before the host (`user@host`) or with a character outside ASCII is error
+  kind `capability` before anything is sent: credentials go in a header, other characters are percent-encoded.
 - HTTP redirects are followed only to hosts allowed by `allow net`; on a redirect to another origin
   (scheme, host or port) the `Authorization`, `Cookie`, `Proxy-Authorization` headers and every header whose
   value carries a secret are dropped. A headers map that is itself secret-labelled (built from or picked with

@@ -110,10 +110,12 @@ def f_fail(rt, a):
     # A secret-labelled kind (any form: transformed, short, built from a secret) is shown as «secret:NAME» -- by
     # its labels, not only by matching registered values. An untrusted kind is shown as is (escaped on a
     # terminal). `catch e` still gets the labelled kind through kind_value.
-    kind = render(a["kind"], redact=True)
+    kind, kind_value = render(a["kind"], redact=True), a["kind"]
+    if not kind.strip():                # an empty kind used to print as "runtime error[]" (round 11)
+        kind, kind_value = "fail", with_labels("fail", labels_of(a["kind"]))
     err = SiparRuntimeError(kind, render(a["message"], redact=True))
     err.value = a["message"]            # keeps labels (secret-safe rendering in the CLI)
-    err.kind_value = a["kind"]          # `catch e` gives e.kind with the labels of the kind argument
+    err.kind_value = kind_value         # `catch e` gives e.kind with the labels of the kind argument
     raise err
 
 

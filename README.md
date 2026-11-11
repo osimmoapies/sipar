@@ -84,7 +84,7 @@ the examples live in this repository.
 
 | Feature | What it gives you |
 |---|---|
-| **Information-flow control** | `untrusted:*` labels from ai / http / files / shell / input; sinks `shell.run`, `fs.write`, `http.get` URL, `http.post` URL+body reject them. `trust(x, "why")` and `approve(x, "question")` are the only ways out, and both are journaled. |
+| **Information-flow control** | `untrusted:*` labels from ai / http / files / shell / input; sinks `shell.run`, `fs.write`, `http.get` URL, `http.post` URL+body and HTTP headers reject them. `trust(x, "why")` and `approve(x, "question")` are the only ways out, and both are journaled. |
 | **Secrets** | `env.secret("KEY")` needs `allow secret ["KEY"]`; its value may only go into HTTP header values — never into prompts, prints, files, paths, commands, error messages or journals (redacted as `«secret:KEY»`, upper/lower-case forms too). Replay re-reads it and checks a salted hash; dropped on cross-host redirects. |
 | **Choice declassification** | `Bool` and plain `enum` values are never labelled: a model can pick from options *you* wrote, and your program can act on that safely. |
 | **Capabilities** | `allow net ["api.github.com"]`, `allow fs.write ["./out"]`, `allow shell ["git status"]`, `allow env ["HOME"]`, `allow secret ["API_KEY"]`. Anything else fails before the effect happens. `shell.run` gets only PATH/HOME/LANG/TMPDIR plus `allow env` names. |

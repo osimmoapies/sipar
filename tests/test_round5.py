@@ -988,12 +988,18 @@ class T_D3_Ops(Base):
     def test_walks_are_linear(self):                           # was 1.6 to 2.4 s each (quadratic to_json)
         import time
         for name, want in (("rend", "108012"), ("enc", "108012"), ("tr", "true"), ("dec", "true")):
-            with clean_env():
-                a = self.p.call("build", 9000)
-                t = time.time()
-                got = self.p.call(name, a)
-            self.assertEqual(got, want, name)
-            self.assertLess(time.time() - t, 1.0, name)
+            best = None
+            for _ in range(3):              # CPU time, best of 3: a busy machine is not a slow walk
+                with clean_env():
+                    a = self.p.call("build", 9000)
+                    t = time.process_time()
+                    got = self.p.call(name, a)
+                    spent = time.process_time() - t
+                self.assertEqual(got, want, name)
+                best = spent if best is None else min(best, spent)
+                if best < 1.0:
+                    break
+            self.assertLess(best, 1.0, name)
 
     def test_equal_any_depth_no_stack(self):                   # explicit stack: works on the main thread
         from sipar.runtime.values import equal

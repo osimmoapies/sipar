@@ -83,6 +83,12 @@ class Caps:
         scopes = self.grants["net"]
         if scopes is not None and not any(self.host_matches(host, port, s) for s in scopes):
             raise cap_error(f"host {host!r} is not in 'allow net' ({', '.join(scopes) or 'empty'})")
+        if "@" in parts.netloc:           # urllib would look up "user@host" as one name (round 11)
+            raise cap_error("URL has a user name or password before the host (user@host); "
+                            "send credentials in a header instead")
+        if not u.isascii():               # http.client can only send ASCII in the request line (round 11)
+            raise cap_error("URL has a character outside ASCII; percent-encode it (é is %C3%A9) and write an "
+                            "international host name in its xn-- form")
         return host
 
     # -- fs
@@ -243,6 +249,11 @@ def check_headers(hdrs: Any) -> None:
         if not _TOKEN.fullmatch(name):
             raise SiparRuntimeError("value", f"http header name '{escape_text(clip(name, 100))}' is not a valid "
                                              f"header name (letters, digits and !#$%&'*+-.^_`|~ only)")
+        if name.lower() in ("host", "content-length", "transfer-encoding"):
+            # written by the runtime from the URL and the body: a second `Host` could reach a site that
+            # `allow net` does not list, a wrong length makes the server wait (round 11)
+            raise SiparRuntimeError("value", f"http header {name!r} is set by the runtime from the URL and the "
+                                             f"body; a program may not set it")
         if _BAD_VALUE.search(value):
             raise SiparRuntimeError("value", f"http header {name!r}: the value contains a line break or a control "
                                              f"character; nothing was sent")
@@ -255,11 +266,13 @@ def check_headers(hdrs: Any) -> None:
 
 def http_request(rt, method: str, url: Any, body: Any, headers: Any) -> Any:
     fname = "http.get" if method == "GET" else "http.post"
-    args = {"url": url}
+    hdrs = headers or {}
+    # headers leave the machine like the URL and the body: untrusted data may not ride in them, in a name or
+    # in a value (round 11; `headers` is in the sink list of both functions in stdlib.py)
+    args = {"url": url, "headers": hdrs}
     if method == "POST":
         args["body"] = body
     check_sinks(fname, args)
-    hdrs = headers or {}
     for k in hdrs:
         if secrets_in(k):
             raise SiparRuntimeError("taint", "secrets may be header values, not header names")

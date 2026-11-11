@@ -1530,7 +1530,7 @@ class Rendering(unittest.TestCase):
     def test_stdlib_docs(self):
         get = lsp.stdlib_doc("http.get").split("\n\n")
         self.assertEqual(get[-3:], ["Optional named argument(s): `headers`.", "Result is untrusted (`untrusted:net`).",
-                                    "Untrusted data is rejected in: `url`."])
+                                    "Untrusted data is rejected in: `url`, `headers`."])
         self.assertEqual(lsp.stdlib_doc("env.secret").split("\n\n")[-1], "Result is a secret (`secret:NAME`).")
         rd = lsp.stdlib_doc("fs.read")
         self.assertTrue(rd.endswith("Result is untrusted (`untrusted:file`)."), rd)

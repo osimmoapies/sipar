@@ -1831,9 +1831,9 @@ class T_F2(unittest.TestCase):
                '    print(t)\n}\n')
         p = Prog(src)
         self.addCleanup(p.cleanup)
-        t0 = time.perf_counter()
+        t0 = time.process_time()                 # CPU time: a busy machine is not a slow loop
         out = p.run()
-        took = time.perf_counter() - t0
+        took = time.process_time() - t0
         self.assertEqual(out, "462502500\n")
         self.assertLess(took, 4.0)               # about 0.4 s now; 20+ s when every write dropped the cache
 

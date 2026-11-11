@@ -1039,7 +1039,7 @@ class T_C15(unittest.TestCase):
     def test_spec_tag_order(self):
         text = spec_text()
         post = [line for line in text.splitlines() if line.startswith("  http.post(")][0]
-        self.assertIn("untrusted not allowed in body,url", post)
+        self.assertIn("untrusted not allowed in body,headers,url", post)
         self.assertIn("secret not allowed in body,url", post)
         save = [line for line in text.splitlines() if line.startswith("  memory.save(")][0]
         self.assertIn("secret not allowed in key,value", save)
