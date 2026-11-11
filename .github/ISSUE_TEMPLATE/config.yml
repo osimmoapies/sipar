@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security hole privately
+    url: https://github.com/osimmoapies/sipar/security/advisories/new
+    about: Untrusted data reached a sink, or a secret got out? Please do not open a public issue.
+  - name: Try Sipar in your browser
+    url: https://osimmoapies.github.io/sipar/
+    about: The real interpreter on one page. You play the attacker.

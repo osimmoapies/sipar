@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in Sipar does not work as SPEC.md or the README says
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time.
+        A security hole (untrusted data reaching a sink, a secret getting out) does not belong here: please report it privately, as SECURITY.md describes.
+  - type: textarea
+    id: program
+    attributes:
+      label: A small Sipar program
+      description: The smallest program that shows the problem.
+      render: rust
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: The command you ran
+      placeholder: sipar run prog.sipar
+    validations:
+      required: true
+  - type: textarea
+    id: got
+    attributes:
+      label: What you got
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Sipar version, Python version, operating system
+      placeholder: Sipar 0.1.0, Python 3.14, macOS 26

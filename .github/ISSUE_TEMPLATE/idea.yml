@@ -1,0 +1,16 @@
+name: Idea or question
+description: Something the language should do, or something that is not clear
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like Sipar to do, or what is unclear?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: An example, if you have one
+      description: A program you would like to be able to write, or the one that confused you.
+      render: rust

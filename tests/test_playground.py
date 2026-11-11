@@ -1163,6 +1163,21 @@ class T_Shipped(unittest.TestCase):
         self.assertIn("--out _site ", read("CONTRIBUTING.md"))
         self.assertIn("--out _site ", read(".github", "workflows", "pages.yml"))
 
+    def test_the_new_issue_page_sends_a_hole_to_the_private_form(self):
+        """A hole must not be reported in public: the new-issue page links the form the verdict links."""
+        config = read(".github", "ISSUE_TEMPLATE", "config.yml")
+        self.assertIn(f"    url: {glue.REPORT}\n", config)
+        self.assertIn(f"    url: {PAGE}\n", config)
+        self.assertIn("SECURITY.md", read(".github", "ISSUE_TEMPLATE", "bug_report.yml"))
+        for form in ("bug_report.yml", "idea.yml"):
+            text = read(".github", "ISSUE_TEMPLATE", form)
+            for key in ("name: ", "description: ", "body:\n"):         # what GitHub needs to show a form
+                self.assertEqual(len(re.findall("^" + re.escape(key), text, re.M)), 1, (form, key))
+            self.assertNotIn("\t", text)
+        asked = re.findall(r"`python3 (tools/\w+\.py)`", read(".github", "PULL_REQUEST_TEMPLATE.md"))
+        self.assertEqual(asked, ["tools/ptest.py"])
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, *asked[0].split("/"))))
+
 
 if __name__ == "__main__":
     unittest.main()
