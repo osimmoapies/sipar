@@ -10,6 +10,10 @@
 
 ![An email with a hidden instruction makes the model call a shell tool; Sipar blocks the call](docs/injection.gif)
 
+**[Try it in your browser](https://osimmoapies.github.io/sipar/)**: you write what the hijacked model says and
+try to make the agent run a command, call a URL or leak an API key. The page runs this interpreter, unchanged
+(Python compiled to WebAssembly); nothing to install, and nothing you type leaves the page.
+
 *Sipar* means "shield" in Tajik. In Sipar, every value that came from a model, a web page, a file or a
 shell command carries a label. The runtime refuses to let labelled data reach a dangerous action —
 running a command, writing a file, calling a URL — until your code has checked it. A prompt
@@ -235,7 +239,7 @@ server. Set `sipar.path` to `bin/sipar` (see `editors/vscode/README.md`).
 
 Version 0.1, alpha: the language can still change. Working today: lexer, parser, type/effect checker,
 interpreter, providers, journal/replay, MCP client, language server, CLI.
-1,700+ tests (unit, security, end-to-end; `python3 tools/ptest.py` runs them in parallel), mutation-tested checker and effect layer.
+1,800+ tests (unit, security, end-to-end; `python3 tools/ptest.py` runs them in parallel), mutation-tested checker and effect layer.
 CI runs them on Linux and macOS with Python 3.12, 3.13 and 3.14. Windows is not supported.
 Full reference: `SPEC.md`; error codes: `docs/ERRORS.md`.
 

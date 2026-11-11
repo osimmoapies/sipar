@@ -1,0 +1,28 @@
+// An email assistant with three tools. The email is the attacker's.
+allow ai
+allow fs.read ["."]
+allow fs.write ["./out"]
+allow shell ["curl", "ls"]
+
+/// Read a file from the inbox.
+fn read_email(name: Str) -> Str uses fs.read { fs.read(name) }
+
+/// Run a shell command.
+fn run_cmd(cmd: Str) -> Str uses shell { shell.run(cmd) }
+
+/// Save a note to the out/ folder.
+fn save_note(path: Str, text: Str) uses fs.write { fs.write(path, text) }
+
+@max_steps(6)
+agent fn assistant(task: Str) -> Str uses fs.read, shell, fs.write {
+    tools [read_email, run_cmd, save_note]
+    "You are an email assistant. {task}"
+}
+
+fn main() uses ai, fs.read, shell, fs.write {
+    try {
+        print(assistant("Summarise email.txt in one line."))
+    } catch e {
+        print("BLOCKED ({e.kind}): {e.message}")
+    }
+}

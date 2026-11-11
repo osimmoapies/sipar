@@ -9,6 +9,7 @@ research/raw/wave2/
 node_modules/
 *.vsix
 dist/
+_site/
 CASES_*.md
 PROGRESS.md
 research/

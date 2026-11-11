@@ -1,0 +1,21 @@
+{
+  "title": "Language tour",
+  "tab": "Tour",
+  "kind": "lesson",
+  "goal": "The rest of the language on one screen: types, enums, match, typed model calls, an agent with tools, a budget, a test.",
+  "notes": [
+    "ai fn returns a typed value: the reply is parsed into Review or the call is retried.",
+    "The agent calls weather(city) with a city the model chose. The city is untrusted, so the URL built from it is refused. The program catches the error and goes on.",
+    "Edit anything. model.json holds the replies of the two model functions."
+  ],
+  "main": "tour.sipar",
+  "model": "model.json",
+  "files": [
+    {"name": "tour.sipar", "role": "program", "from": "examples/tour.sipar"},
+    {"name": "model.json", "role": "attacker"}
+  ],
+  "web": [
+    {"method": "GET", "url": "https://wttr.in/", "prefix": true, "body": "Dushanbe: sunny +12°C"}
+  ],
+  "rule": {"type": "none"}
+}

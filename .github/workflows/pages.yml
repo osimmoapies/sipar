@@ -1,0 +1,50 @@
+name: playground
+
+# Builds the playground (playground/ + the sipar package + the pinned Pyodide release) and publishes it
+# with GitHub Pages. Nothing built is kept in the repository: tools/build_site.py writes it into _site here.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+      - name: Playground tests
+        run: python -m unittest discover -s tests -p "test_playground.py"
+      - name: Build the site
+        run: python tools/build_site.py --out _site --fetch-pyodide
+      - name: The built site runs every scenario on its own Python runtime
+        run: node tools/site_smoke.mjs _site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

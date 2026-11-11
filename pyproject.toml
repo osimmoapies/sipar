@@ -46,5 +46,6 @@ packages = ["sipar"]
 "SPEC.md" = "sipar/SPEC.md"             # `sipar spec` prints it: the wheel carries a copy inside the package
 
 [tool.hatch.build.targets.sdist]
-include = ["/sipar", "/tests", "/examples", "/docs", "/tools", "/bin", "/editors", "/.github", "/SPEC.md",
+include = ["/sipar", "/tests", "/examples", "/docs", "/tools", "/playground", "/bin", "/editors", "/.github",
+           "/SPEC.md",
            "/README.md", "/README.ru.md", "/SECURITY.md", "/CONTRIBUTING.md", "/LICENSE-MIT", "/LICENSE-APACHE"]

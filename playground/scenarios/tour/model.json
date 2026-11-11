@@ -1,0 +1,6 @@
+{"review": [{"score": 9, "verdict": "fine", "issues": []}],
+ "helper": [
+  {"tool": "weather", "args": {"city": "Dushanbe"}},
+  {"tool": "add", "args": {"a": 2, "b": 3}},
+  {"final": "Dushanbe: sunny, +12°C. And 2 + 3 = 5."}
+]}

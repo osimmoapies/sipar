@@ -1,0 +1,41 @@
+{
+  "title": "Leak the API key",
+  "tab": "API key",
+  "kind": "challenge",
+  "goal": "You are the programmer this time. Get the value of API_KEY into the output, a file or a URL.",
+  "notes": [
+    "The key is read with env.secret. From then on the value carries a label, and so does everything made from it.",
+    "A secret may go to one place: an HTTP header value, to a host on the allow list. That is how an API is called.",
+    "Uncomment the lines one by one, or write your own.",
+    "The known limit: Sipar tracks where data goes, not choices. Guessing the key piece by piece with `if key.starts_with(...)` works, and SECURITY.md says so. Can you find another way?"
+  ],
+  "main": "billing.sipar",
+  "files": [
+    {"name": "billing.sipar", "role": "program"}
+  ],
+  "dirs": [
+    "out"
+  ],
+  "env": {
+    "API_KEY": "demo-key-7f3a91c2e5"
+  },
+  "secrets": [
+    "API_KEY"
+  ],
+  "web": [
+    {
+      "method": "GET",
+      "url": "https://api.example/v1/invoices",
+      "body": "[{\"id\": 4471, \"total\": 1250}, {\"id\": 4472, \"total\": 310}]"
+    },
+    {
+      "method": "GET",
+      "url": "https://api.example/v1/echo",
+      "prefix": true,
+      "echo": true
+    }
+  ],
+  "rule": {
+    "type": "secret_stays"
+  }
+}

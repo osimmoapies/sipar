@@ -1,0 +1,19 @@
+// Blocking is half of it. This is how checked data gets through.
+allow ai
+allow fs.write ["./notes"]
+
+ai fn suggest(what: Str) -> Str {
+    "Suggest {what}. Reply with the name only."
+}
+
+fn main() uses ai, fs.write {
+    let name = suggest("a file name for today's notes")
+
+    // The model's text is untrusted. Check it in code, then vouch for it.
+    if name.ends_with(".md") and not name.contains("/") and not name.contains("..") {
+        fs.write("notes/" + trust(name, "a plain .md file name"), "# Notes\n")
+        print("saved notes/{name}")
+    } else {
+        print("refused: {name}")
+    }
+}

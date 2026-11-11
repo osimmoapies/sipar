@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
+<title>Sipar playground: try to hijack the agent</title>
+<meta name="description" content="The real Sipar interpreter runs in your browser. You write what the hijacked model says. Try to make the agent run a command, call a URL or leak an API key.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Sipar playground: try to hijack the agent">
+<meta property="og:description" content="The real interpreter runs in your browser. You write what the hijacked model says. Try to make the agent run a command or leak an API key.">
+<meta property="og:url" content="https://osimmoapies.github.io/sipar/">
+<meta property="og:image" content="https://osimmoapies.github.io/sipar/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Sipar playground: the hijacked email assistant challenge, with the verdict Held.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 6v9c0 7 5 12 12 15 7-3 12-8 12-15V6z' fill='%2319b3a4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+    <a class="brand" href="https://github.com/osimmoapies/sipar">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 6v9c0 7 5 12 12 15 7-3 12-8 12-15V6z"/></svg>
+        <span class="name">Sipar</span><span class="where">playground</span>
+    </a>
+    <p class="tagline">A language for AI agents where a hijacked model cannot act. The real interpreter runs in your browser: play the attacker.</p>
+    <nav class="links" aria-label="Project">
+        <a href="https://github.com/osimmoapies/sipar">GitHub</a>
+        <a href="https://github.com/osimmoapies/sipar#readme">Read me</a>
+        <a href="https://github.com/osimmoapies/sipar/blob/main/SPEC.md">Spec</a>
+    </nav>
+</header>
+
+<main>
+    <div class="scenarios" id="scenarios" role="tablist" aria-label="Scenarios"></div>
+
+    <section class="brief" aria-live="polite">
+        <p class="kind" id="kind"></p>
+        <h1 id="title">Loading the playground</h1>
+        <p class="goal" id="goal"></p>
+        <ul class="notes" id="notes"></ul>
+    </section>
+
+    <div class="work">
+        <section class="pane" aria-label="Files">
+            <div class="actions">
+                <button type="button" class="primary" id="run">Run <kbd id="runkey">Ctrl+Enter</kbd></button>
+                <button type="button" id="reset">Reset</button>
+                <button type="button" id="share">Copy link</button>
+                <span class="status" id="status" role="status" aria-live="polite">Starting</span>
+            </div>
+            <div class="filetabs" id="filetabs" role="tablist" aria-label="Files of this scenario"></div>
+            <p class="filemeta" id="filemeta"></p>
+            <div class="editor" id="editor">
+                <pre class="hl" id="hl" aria-hidden="true"><code id="hlcode"></code></pre>
+                <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="File contents" aria-describedby="filemeta"></textarea>
+            </div>
+        </section>
+
+        <section class="pane result" id="result" aria-label="Result">
+            <div class="verdict" id="verdict" role="status" hidden>
+                <strong id="verdict-title"></strong>
+                <p id="verdict-text"></p>
+            </div>
+            <h2>Output</h2>
+            <pre class="out" id="out" tabindex="0">The program has not run yet.</pre>
+            <pre class="out err" id="err" tabindex="0" hidden></pre>
+            <p class="runmeta" id="runmeta"></p>
+            <h2>What left the sandbox</h2>
+            <div class="events" id="events"><p class="none">Nothing yet.</p></div>
+            <details class="journal">
+                <summary>Journal: every effect the run recorded</summary>
+                <pre class="out" id="journal" tabindex="0"></pre>
+            </details>
+        </section>
+    </div>
+</main>
+
+<footer class="foot">
+    <p><strong>What is real here.</strong> The interpreter is the released Sipar package, unchanged, running on Python in your browser (Pyodide). Labels, sinks, the allow list, secrets and the journal are the real code. Only the last step is recorded instead of performed: a command is not started, a request gets a canned answer. There is no real model: <code>model.json</code> plays the model, and you write it.</p>
+    <p><strong>What stays here.</strong> Everything runs on this page. Nothing you type is sent anywhere; a shared link keeps your edits in the part after <code>#</code>, which browsers do not send to a server.</p>
+    <p><strong>What it is built on.</strong> Python in the browser is <a href="https://github.com/pyodide/pyodide">Pyodide</a>, served here unchanged from its release. Pyodide is under the Mozilla Public License 2.0 and its source is at that link. Sipar itself is under MIT or Apache-2.0, as you prefer.</p>
+    <p class="build" id="build"></p>
+</footer>
+
+<noscript><p class="noscript">The playground needs JavaScript and WebAssembly. Without them you can still read the examples on <a href="https://github.com/osimmoapies/sipar">GitHub</a>.</p></noscript>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+// A research agent that reads the web. The page is the attacker's.
+allow ai
+allow net ["news.example"]
+
+/// Fetch today's front page.
+fn fetch_news() -> Str uses net { http.get("https://news.example/today") }
+
+/// Fetch another page of the news site.
+fn fetch_page(path: Str) -> Str uses net { http.get("https://news.example/" + path) }
+
+/// Send a finished report to the team.
+fn send_report(text: Str) -> Str uses net { http.post("https://news.example/reports", text) }
+
+@max_steps(6)
+agent fn researcher(task: Str) -> Str uses net {
+    tools [fetch_news, fetch_page, send_report]
+    "You are a research assistant. {task}"
+}
+
+fn main() uses ai, net {
+    try {
+        print(researcher("Read today's news and give me three bullet points."))
+    } catch e {
+        print("BLOCKED ({e.kind}): {e.message}")
+    }
+}

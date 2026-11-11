@@ -507,9 +507,34 @@ def env_get(rt, name: Any) -> Any:
 SECRET_HASH_ROUNDS = 100_000
 
 
+def pbkdf2_sha256(password: bytes, salt: bytes, rounds: int) -> bytes:
+    """PBKDF2-HMAC-SHA256, 32 bytes (RFC 8018), in plain Python: the same bytes as hashlib.pbkdf2_hmac.
+    For a Python built without OpenSSL (Pyodide in a browser is one), where hashlib has no pbkdf2_hmac."""
+    key = hashlib.sha256(password).digest() if len(password) > 64 else password
+    key = key.ljust(64, b"\0")
+    inner, outer = hashlib.sha256(bytes(b ^ 0x36 for b in key)), hashlib.sha256(bytes(b ^ 0x5C for b in key))
+
+    def prf(msg: bytes) -> bytes:
+        i, o = inner.copy(), outer.copy()
+        i.update(msg)
+        o.update(i.digest())
+        return o.digest()
+
+    u = prf(salt + b"\x00\x00\x00\x01")
+    acc = int.from_bytes(u, "big")
+    for _ in range(rounds - 1):
+        u = prf(u)
+        acc ^= int.from_bytes(u, "big")
+    return acc.to_bytes(32, "big")
+
+
 def secret_hash(value: str, salt: str) -> str:
     """Slow salted hash of a secret, journaled instead of the value so replay can check it got the same one."""
-    return hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), bytes.fromhex(salt), SECRET_HASH_ROUNDS).hex()
+    slow = getattr(hashlib, "pbkdf2_hmac", None)
+    raw, salt_bytes = value.encode("utf-8"), bytes.fromhex(salt)
+    if slow is None:
+        return pbkdf2_sha256(raw, salt_bytes, SECRET_HASH_ROUNDS).hex()
+    return slow("sha256", raw, salt_bytes, SECRET_HASH_ROUNDS).hex()
 
 
 def env_secret(rt, name: Any) -> Any:

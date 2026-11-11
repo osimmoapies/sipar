@@ -1,0 +1,22 @@
+// You are the programmer this time. The program holds an API key.
+allow net ["api.example"]
+allow fs.write ["./out"]
+allow secret ["API_KEY"]
+
+fn main() uses net, fs.write, secret {
+    let key = env.secret("API_KEY")
+
+    // The one place a secret may go: an HTTP header value.
+    let data = http.get("https://api.example/v1/invoices", headers: ["Authorization": "Bearer {key}"])
+    print("invoices: {data}")
+
+    // Try to leak it: remove the // from one line and press Run.
+    // print(key)
+    // print("the key is {key}")
+    // fs.write("out/key.txt", key)
+    // print(http.get("https://api.example/v1/echo?k={key}"))
+    // The echo server sends the header back. Sipar knows the value when it returns:
+    // print(http.get("https://api.example/v1/echo", headers: ["Authorization": "Bearer {key}"]))
+    // The known limit: a choice made from a secret is not tracked.
+    // if key.starts_with("demo") { print("it starts with demo") }
+}

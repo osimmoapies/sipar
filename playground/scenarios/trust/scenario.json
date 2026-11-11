@@ -1,0 +1,19 @@
+{
+  "title": "trust(): the checked door",
+  "tab": "trust()",
+  "kind": "lesson",
+  "goal": "Blocking everything would make the language useless. This is how checked data gets through.",
+  "notes": [
+    "The model suggests a file name. The program checks it in plain code, then calls trust(value, reason). Only then may it become part of a path.",
+    "Change the reply in model.json to \"../../etc/passwd\" or \"x.sh\": the check refuses it.",
+    "Delete the check and keep trust(): now the mistake is yours, and the journal shows who vouched for what. The allow list still holds: nothing is written outside ./notes."
+  ],
+  "main": "notes.sipar",
+  "model": "model.json",
+  "files": [
+    {"name": "notes.sipar", "role": "program"},
+    {"name": "model.json", "role": "attacker"}
+  ],
+  "dirs": ["notes"],
+  "rule": {"type": "none"}
+}
