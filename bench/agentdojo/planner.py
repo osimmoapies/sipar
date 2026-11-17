@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from llm import chat
+from llm import Unavailable, chat
 from suites import HERE, suite_info
 
 SIPAR = str(HERE.parents[1] / "bin" / "sipar")
@@ -87,7 +87,11 @@ def main():
         if dest.exists():
             continue
         log = []
-        body, n = plan(info, task.PROMPT, model, log=log)
+        try:
+            body, n = plan(info, task.PROMPT, model, log=log)
+        except Unavailable as e:        # quota or network, not the model's answer: no result, drive.py retries
+            print(f"{tid}: provider unavailable, stopping: {str(e)[:200]}", flush=True)
+            sys.exit(75)
         (outdir / f"{tid}.log.json").write_text(json.dumps({"prompt": task.PROMPT, "model": model, "log": log}, indent=1))
         if body is None:
             print(f"{tid}: FAILED after {n} tries", flush=True)

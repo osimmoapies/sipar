@@ -3,7 +3,7 @@
 Usage: python drive.py <suite> <provider/model>
 Order: planner for tasks without a program, then Sipar default/strict with the approver denying and saying yes,
 then the plain tool-calling baseline. Every step is resumable (each script skips finished runs); when the provider
-answers 429 (quota) the step stops without recording that run and is started again after a wait. Uses the fixed
+answers 429 (quota), a 5xx, or the network is down, the step stops without recording that run and is started again after a wait. Uses the fixed
 injection subset in INJECTIONS (one per attack kind) unless BENCH_INJECTIONS is set."""
 import os
 import subprocess
@@ -29,8 +29,8 @@ def step(name, argv, env_extra):
         lines = [l for l in (r.stdout + r.stderr).splitlines() if "Warning" not in l]
         for l in lines[-40:]:
             print("   ", l, flush=True)
-        # exit 75: run.py / baseline.py saw a 429; the planner raises "HTTP 429" (token counts like "1429 tok"
-        # in run lines must not match, so only these exact forms count)
+        # exit 75: planner / run.py / baseline.py saw the provider fail (429 quota, 5xx, no network).
+        # The text forms are a second net; token counts like "1429 tok" in run lines must not match.
         quota = r.returncode == 75 or any("HTTP 429" in l or "Error code: 429" in l for l in lines)
         if r.returncode == 0 and not quota:
             log(f"done {name}")

@@ -19,6 +19,12 @@ from suites import HERE, suite_info
 USED = [0]
 
 
+def unavailable(e):
+    """The provider, not the agent, failed: quota (429), 5xx, no network or timeout. Not a result."""
+    return isinstance(e, (openai.RateLimitError, openai.APIConnectionError, openai.InternalServerError)) \
+        or "Error code: 429" in str(e)
+
+
 def make_pipeline(model):
     provider, name = model.split("/", 1)
     client = openai.OpenAI(base_url=PROVIDERS[provider][0], api_key=key_of(provider), max_retries=8)
@@ -65,8 +71,8 @@ def main():
                 errtxt = ""
             except Exception as e:          # provider failure: recorded, not counted as a result
                 print(f"{tid} {iid} ERROR {str(e)[:200]}", flush=True)
-                if "429" in str(e):
-                    sys.exit(75)            # quota used up: drive.py waits and runs again
+                if unavailable(e):
+                    sys.exit(75)            # quota used up or no network: drive.py waits and runs again
                 continue
             rec = {"user_task": tid, "injection_task": iid, "mode": "baseline", "model": model,
                    "utility": utility, "attack_success": (security if iid is not None else None),

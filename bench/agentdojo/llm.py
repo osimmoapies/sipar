@@ -13,6 +13,10 @@ PROVIDERS = {
 }
 
 
+class Unavailable(RuntimeError):
+    """The provider could not answer (quota, 5xx, no network) after every retry: try again later."""
+
+
 def key_of(provider):
     return Path(os.path.expanduser(PROVIDERS[provider][1])).read_text().strip()
 
@@ -40,9 +44,10 @@ def chat(model, messages, tools=None, max_tokens=8000, temperature=0.0, tries=8)
                 time.sleep(delay)
                 delay = min(delay * 2, 120)
                 continue
-            raise RuntimeError(f"{model}: HTTP {e.code}: {txt}") from None
+            cls = Unavailable if e.code in (429, 500, 502, 503, 504) else RuntimeError
+            raise cls(f"{model}: HTTP {e.code}: {txt}") from None
         except (urllib.error.URLError, TimeoutError) as e:
             if attempt < tries - 1:
                 time.sleep(delay)
                 continue
-            raise RuntimeError(f"{model}: {e}") from None
+            raise Unavailable(f"{model}: {e}") from None

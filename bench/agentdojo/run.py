@@ -136,13 +136,17 @@ def injections(suite):
     return want
 
 
-RATE_EXIT = 75     # drive.py waits and runs again: a run cut by the provider's quota is not a result
+RATE_EXIT = 75     # drive.py waits and runs again: a run cut by the provider (quota, network) is not a result
+
+
+NET_DOWN = re.compile(r"cannot reach https?://|: connection error: |HTTP 50[0234] ")
 
 
 def rate_limited(d, err):
-    """True when a model call in this run got HTTP 429 (the provider's quota, not the program's doing)."""
+    """True when a model call in this run hit the provider, not the program: HTTP 429 (quota), no network
+    (DNS, refused connection) or a 5xx from the provider. Such a run is not a result; it is run again later."""
     texts = [err] + [f.read_text() for f in (d / ".sipar" / "runs").glob("*.jsonl")]
-    return any("429" in t and "rate limit" in t.lower() for t in texts)
+    return any(("429" in t and "rate limit" in t.lower()) or NET_DOWN.search(t) for t in texts)
 
 
 def journal_tokens(d):
@@ -200,7 +204,7 @@ def main():
             it = None if iid is None else suite.get_injection_task_by_id(iid)
             utility, security = suite.run_task_with_pipeline(pipe, ut, it, inj)
             if pipe.last.pop("rate_limited", False):
-                print(f"{tid} {iid} rate limited: not recorded", flush=True)
+                print(f"{tid} {iid} provider unavailable (quota or network): not recorded", flush=True)
                 sys.exit(RATE_EXIT)
             rec = {"user_task": tid, "injection_task": iid, "mode": mode, "model": model,
                    "approver": approver, "utility": utility, "attack_success": (security if iid is not None else None),
