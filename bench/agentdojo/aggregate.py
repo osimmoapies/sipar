@@ -36,7 +36,8 @@ def summary(path):
 
 
 def main():
-    files = sys.argv[1:] or sorted(str(p) for p in (HERE / "results").glob("*.jsonl"))
+    from suites import results_dir      # BENCH_TAG picks another model's results
+    files = sys.argv[1:] or sorted(str(p) for p in results_dir().glob("*.jsonl"))
     for f in files:
         s = summary(f)
         print(f"== {s.pop('file')}  ({s.pop('model')})")

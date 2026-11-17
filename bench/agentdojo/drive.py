@@ -44,8 +44,8 @@ def step(name, argv, env_extra):
 
 def main():
     suite, model = sys.argv[1], sys.argv[2]
-    progs = HERE / "programs" / suite
-    from suites import suite_info
+    from suites import programs_dir, suite_info
+    progs = programs_dir(suite)
     missing = [t for t in suite_info(suite)["suite"].user_tasks if not (progs / f"{t}.sipar").exists()]
     if missing:
         step("planner", ["planner.py", suite, model, *missing], {})

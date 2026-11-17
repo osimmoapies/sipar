@@ -2,6 +2,7 @@
 
 Run: /path/to/agentdojo-venv/bin/python -m unittest test_bench   (from bench/agentdojo)"""
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ import baseline
 import llm
 import planner
 import run
+import suites
 
 
 def dir_with_journal(text=""):
@@ -33,6 +35,7 @@ class RunUnavailable(unittest.TestCase):
             "runtime error[ai]: local: connection error: [Errno 54] Connection reset by peer",
             "runtime error[ai]: local: HTTP 503 Service Unavailable: busy",
             "runtime error[ai]: local: HTTP 429 Too Many Requests: Rate limit reached",
+            "runtime error[ai]: openrouter: HTTP 429 Too Many Requests: x:free is temporarily rate-limited upstream",
         ]:
             with self.subTest(err=err[:40]):
                 self.assertTrue(run.rate_limited(dir_with_journal(), err))
@@ -97,13 +100,65 @@ class LlmAndPlanner(unittest.TestCase):
         task = mock.Mock(PROMPT="p")
         info = {"suite": mock.Mock(user_tasks={"user_task_1": task})}
         with mock.patch.object(planner, "suite_info", return_value=info), \
-             mock.patch.object(planner, "HERE", out), \
+             mock.patch.object(planner, "programs_dir", return_value=out / "programs" / "banking"), \
              mock.patch.object(planner, "plan", side_effect=llm.Unavailable("groq/m: HTTP 429: x")), \
              mock.patch.object(sys, "argv", ["planner.py", "banking", "groq/m"]):
             with self.assertRaises(SystemExit) as cm:
                 planner.main()
         self.assertEqual(cm.exception.code, 75)
         self.assertEqual(list((out / "programs" / "banking").iterdir()), [])
+
+
+class OwnersReserve(unittest.TestCase):
+    """The benchmark shares the owner's 1000 free OpenRouter requests a day and must leave him BENCH_OR_RESERVE."""
+
+    def answer(self, remaining):
+        body = json.dumps({"data": {"free_model_daily_requests": {"used": 1, "limit": 1000, "remaining": remaining}}})
+        return mock.patch("llm.urllib.request.urlopen", return_value=io.BytesIO(body.encode()))
+
+    def test_stops_at_the_reserve(self):
+        with mock.patch("llm.key_of", return_value="k"):
+            for left, ok in [(250, False), (300, False), (301, True), (1000, True)]:
+                with self.subTest(left=left), self.answer(left):
+                    self.assertEqual(llm.quota_left("openrouter/m:free", reserve=300), ok)
+
+    def test_no_check_when_not_needed(self):
+        with mock.patch("llm.urllib.request.urlopen") as net, mock.patch("llm.key_of", return_value="k"):
+            self.assertTrue(llm.quota_left("groq/openai/gpt-oss-120b", reserve=300))
+            self.assertTrue(llm.quota_left("openrouter/m:free", reserve=0))
+        net.assert_not_called()
+
+    def test_reserve_from_env(self):
+        with mock.patch.dict("os.environ", {"BENCH_OR_RESERVE": "300"}), mock.patch("llm.key_of", return_value="k"), \
+             self.answer(10):
+            self.assertFalse(llm.quota_left("openrouter/m:free"))
+
+    def test_unknown_counts_as_left(self):
+        with mock.patch("llm.urllib.request.urlopen", side_effect=urllib.error.URLError("down")), \
+             mock.patch("llm.key_of", return_value="k"):
+            self.assertTrue(llm.quota_left("openrouter/m:free", reserve=300))
+
+    def test_planner_stops_before_asking(self):
+        out = Path(tempfile.mkdtemp())
+        info = {"suite": mock.Mock(user_tasks={"user_task_1": mock.Mock(PROMPT="p")})}
+        with mock.patch.object(planner, "suite_info", return_value=info), \
+             mock.patch.object(planner, "programs_dir", return_value=out), \
+             mock.patch.object(planner, "quota_left", return_value=False), \
+             mock.patch.object(planner, "plan", side_effect=AssertionError("asked the model")), \
+             mock.patch.object(sys, "argv", ["planner.py", "banking", "openrouter/m:free"]):
+            with self.assertRaises(SystemExit) as cm:
+                planner.main()
+        self.assertEqual(cm.exception.code, 75)
+
+
+class TagDirs(unittest.TestCase):
+    def test_tag_keeps_models_apart(self):
+        with mock.patch.object(suites, "TAG", ""):
+            self.assertEqual(suites.programs_dir("banking"), suites.HERE / "programs" / "banking")
+            self.assertEqual(suites.results_dir(), suites.HERE / "results")
+        with mock.patch.object(suites, "TAG", "nemo"):
+            self.assertEqual(suites.programs_dir("banking"), suites.HERE / "programs-nemo" / "banking")
+            self.assertEqual(suites.results_dir(), suites.HERE / "results-nemo")
 
 
 if __name__ == "__main__":

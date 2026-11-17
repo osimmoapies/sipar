@@ -17,6 +17,23 @@ class Unavailable(RuntimeError):
     """The provider could not answer (quota, 5xx, no network) after every retry: try again later."""
 
 
+def quota_left(model, reserve=None):
+    """False when the provider's free daily requests left are at or below BENCH_OR_RESERVE (OpenRouter only: the
+    same key and the same 1000 free requests a day serve the owner's other tools, so the benchmark leaves them
+    a reserve). Unknown (no network, other provider, no reserve set) counts as left."""
+    reserve = int(os.environ.get("BENCH_OR_RESERVE", "0") if reserve is None else reserve)
+    if not reserve or not model.startswith("openrouter/"):
+        return True
+    try:
+        req = urllib.request.Request("https://openrouter.ai/api/v1/key", headers={
+            "Authorization": "Bearer " + key_of("openrouter"), "User-Agent": "sipar-bench/0.2"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            left = json.load(r)["data"]["free_model_daily_requests"]["remaining"]
+    except Exception:
+        return True
+    return left is None or int(left) > reserve
+
+
 def key_of(provider):
     return Path(os.path.expanduser(PROVIDERS[provider][1])).read_text().strip()
 

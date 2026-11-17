@@ -11,9 +11,9 @@ from agentdojo.agent_pipeline import (AgentPipeline, InitQuery, OpenAILLM, Syste
                                       ToolsExecutor)
 from agentdojo.agent_pipeline.agent_pipeline import load_system_message
 
-from llm import PROVIDERS, key_of
+from llm import PROVIDERS, key_of, quota_left
 from run import Attack, injections
-from suites import HERE, suite_info
+from suites import results_dir, suite_info
 
 
 USED = [0]
@@ -49,7 +49,7 @@ def main():
     suite = suite_info(suite_name)["suite"]
     pipe = make_pipeline(model)
     attack = Attack(suite, pipe)
-    outp = HERE / "results" / f"{suite_name}-baseline.jsonl"
+    outp = results_dir() / f"{suite_name}-baseline.jsonl"
     outp.parent.mkdir(exist_ok=True)
     done = set()
     if outp.exists():
@@ -62,6 +62,9 @@ def main():
         for iid in [None] + injections(suite):
             if (tid, iid) in done:
                 continue
+            if not quota_left(model):
+                print("daily request quota kept for the owner: stopping", flush=True)
+                sys.exit(75)
             it = None if iid is None else suite.get_injection_task_by_id(iid)
             inj = {} if it is None else attack.attack(ut, it)
             t0 = time.time()

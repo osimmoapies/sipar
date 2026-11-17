@@ -13,6 +13,17 @@ from pydantic import BaseModel
 VERSION = "v1.2.2"
 HERE = Path(__file__).resolve().parent
 PY = sys.executable
+# BENCH_TAG keeps a second model's programs and results apart: programs-<tag>/, results-<tag>/ (empty = the
+# plain programs/ and results/)
+TAG = os.environ.get("BENCH_TAG", "").strip()
+
+
+def programs_dir(suite):
+    return HERE / (f"programs-{TAG}" if TAG else "programs") / suite
+
+
+def results_dir():
+    return HERE / (f"results-{TAG}" if TAG else "results")
 
 # A tool is readonly only when calling it with attacker-chosen arguments is harmless (SPEC §7a).
 READONLY = {

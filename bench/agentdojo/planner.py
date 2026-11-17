@@ -6,8 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from llm import Unavailable, chat
-from suites import HERE, suite_info
+from llm import Unavailable, chat, quota_left
+from suites import HERE, programs_dir, suite_info
 
 SIPAR = str(HERE.parents[1] / "bin" / "sipar")
 CHEAT = (HERE / "cheatsheet.md").read_text()
@@ -78,7 +78,7 @@ def main():
     suite_name, model = sys.argv[1], sys.argv[2]
     only = sys.argv[3:] or None
     info = suite_info(suite_name)
-    outdir = HERE / "programs" / suite_name
+    outdir = programs_dir(suite_name)
     outdir.mkdir(parents=True, exist_ok=True)
     for tid, task in info["suite"].user_tasks.items():
         if only and tid not in only:
@@ -86,6 +86,9 @@ def main():
         dest = outdir / f"{tid}.sipar"
         if dest.exists():
             continue
+        if not quota_left(model):
+            print("daily request quota kept for the owner: stopping", flush=True)
+            sys.exit(75)
         log = []
         try:
             body, n = plan(info, task.PROMPT, model, log=log)

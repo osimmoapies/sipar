@@ -22,7 +22,8 @@ from agentdojo.functions_runtime import FunctionCall
 from agentdojo.types import text_content_block_from_string
 
 from llm import PROVIDERS, key_of
-from suites import HERE, suite_info
+from llm import quota_left
+from suites import HERE, programs_dir, results_dir, suite_info
 
 SIPAR = str(HERE.parents[1] / "bin" / "sipar")
 
@@ -86,7 +87,7 @@ class SiparPipeline(BasePipelineElement):
 
     def query(self, query, runtime, env, messages=[], extra_args={}):
         tid = self.by_prompt[query]
-        prog = HERE / "programs" / self.info["suite"].name / f"{tid}.sipar"
+        prog = programs_dir(self.info["suite"].name) / f"{tid}.sipar"
         calls, out, err, code, secs, tokens, limited = [], "", "", None, 0.0, 0, False
         if prog.exists():
             with tempfile.TemporaryDirectory() as d:
@@ -146,7 +147,7 @@ def rate_limited(d, err):
     """True when a model call in this run hit the provider, not the program: HTTP 429 (quota), no network
     (DNS, refused connection) or a 5xx from the provider. Such a run is not a result; it is run again later."""
     texts = [err] + [f.read_text() for f in (d / ".sipar" / "runs").glob("*.jsonl")]
-    return any(("429" in t and "rate limit" in t.lower()) or NET_DOWN.search(t) for t in texts)
+    return any(("429" in t and re.search(r"rate[- ]limit", t, re.I)) or NET_DOWN.search(t) for t in texts)
 
 
 def journal_tokens(d):
@@ -180,7 +181,7 @@ def main():
     suite = info["suite"]
     pipe = SiparPipeline(info, mode, model, approver)
     attack = Attack(suite, pipe)
-    outp = HERE / "results" / (f"{suite_name}-{mode}.jsonl" if approver == "deny" else
+    outp = results_dir() / (f"{suite_name}-{mode}.jsonl" if approver == "deny" else
                                f"{suite_name}-{mode}-approve_{approver}.jsonl")
     outp.parent.mkdir(exist_ok=True)
     done = set()
@@ -195,6 +196,9 @@ def main():
         for iid in jobs:
             if (tid, iid) in done:
                 continue
+            if not quota_left(model):
+                print("daily request quota kept for the owner: stopping", flush=True)
+                sys.exit(RATE_EXIT)
             try:
                 inj = {} if iid is None else attack.attack(ut, suite.get_injection_task_by_id(iid))
             except ValueError as e:  # not injectable
