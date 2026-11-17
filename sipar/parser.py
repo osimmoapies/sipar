@@ -1,6 +1,7 @@
 """Sipar parser: tokens -> ast.Program (recursive descent + precedence climbing)."""
 from __future__ import annotations
 
+import dataclasses
 from typing import Optional
 
 from . import ast as A
@@ -28,6 +29,10 @@ FOREIGN_PATTERNS = {
     **dict.fromkeys(("Ok", "Err"), "Sipar has no Result type: a failing call raises an error; catch it with "
                                    "`try { ... } catch e { e.kind }`"),
 }
+
+
+BRACE_HINT = ("`{` inside a string starts an interpolation `{expr}`; for a literal brace (JSON or a template in "
+              "a prompt) write `\\{` and `\\}`")
 
 
 class Parser:
@@ -108,9 +113,13 @@ class Parser:
     def expect_ident(self, what: str = "name") -> Token:
         if self.tok.kind != "ident":
             extra = " (it is a keyword)" if self.tok.kind.isalpha() else ""
-            raise self.err(f"expected {what}, found {self.describe(self.tok)}{extra}",
-                           hint="names are letters, digits and _, starting with a letter or _"
-                           + ("; rename it, keywords are reserved" if extra else ""))
+            if self.tok.kind == "none":
+                hint = ("`none` is the empty value of a `T?` type and cannot be a name; for \"nothing to do\" "
+                        "use another name, e.g. `skip`, or make the value optional (`Action?`)")
+            else:
+                hint = ("names are letters, digits and _, starting with a letter or _"
+                        + ("; rename it, keywords are reserved" if extra else ""))
+            raise self.err(f"expected {what}, found {self.describe(self.tok)}{extra}", hint=hint)
         return self.adv()
 
     def skip_nl(self) -> None:
@@ -881,15 +890,22 @@ class Parser:
                 if self.str_nesting >= MAX_STR_NESTING:
                     raise self.err(f"strings nested too deeply inside interpolations (more than {MAX_STR_NESTING} "
                                    "levels)", t, code="E115", hint="build the inner text with `let` first")
-                sub = Lexer(src, self.file, line, col).tokenize()
-                sp = Parser(sub, self.file)
-                sp.nesting = self.nesting       # "{"{"{...}"}"}" nests too
-                sp.str_nesting = self.str_nesting + 1
-                sp.skip_nl()
-                e = sp.expr()
-                sp.skip_nl()
-                if not sp.at("eof"):
-                    raise sp.err(f"unexpected {sp.describe(sp.tok)} in string interpolation", code="E103")
+                try:
+                    sub = Lexer(src, self.file, line, col).tokenize()
+                    sp = Parser(sub, self.file)
+                    sp.nesting = self.nesting       # "{"{"{...}"}"}" nests too
+                    sp.str_nesting = self.str_nesting + 1
+                    sp.skip_nl()
+                    e = sp.expr()
+                    sp.skip_nl()
+                    if not sp.at("eof"):
+                        raise sp.err(f"unexpected {sp.describe(sp.tok)} in string interpolation", code="E103")
+                except SiparSyntaxError as err:
+                    # The usual cause is text that was not meant as code: JSON or a template inside a string or an
+                    # `ai fn` prompt. Say so, whatever the inner error was (models hit this with JSON examples).
+                    if err.diag.code != "E115" and BRACE_HINT not in err.diag.hint:
+                        err.diag = dataclasses.replace(err.diag, hint=BRACE_HINT + (f"; {err.diag.hint}" if err.diag.hint else ""))
+                    raise
                 parts.append(e)
         return A.StrLit(t.line, t.col, parts)
 

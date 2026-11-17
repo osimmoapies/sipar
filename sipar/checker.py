@@ -332,6 +332,7 @@ class Checker:
     # ------------------------------------------------------------ declarations
     def collect(self, items: list) -> None:
         type_decls: list = []
+        first_line: dict = {}       # type/enum name -> line of its first declaration (for the E202 hint)
         for it in items:
             if isinstance(it, A.Allow):
                 self.check_allow(it)
@@ -345,8 +346,12 @@ class Checker:
                              f"choose another name, e.g. `{it.name.capitalize()}Kind`")
                     continue
                 if it.name in self.records or it.name in self.enums:
-                    self.err("E202", it, f"type `{it.name}` is already defined", "choose another name")
+                    at = first_line.get(it.name)
+                    self.err("E202", it, f"type `{it.name}` is already defined"
+                             + (f" (line {at})" if at else ""),
+                             "use the first one and delete this declaration, or choose another name")
                     continue
+                first_line.setdefault(it.name, it.line)
                 if isinstance(it, A.TypeDecl):
                     self.records[it.name] = {}
                 else:

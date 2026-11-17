@@ -180,6 +180,46 @@ class T_ModelMistakes(unittest.TestCase):
         e = self.one('fn main() {\n    let s = "a"\n    print(s.uppr())\n}\n')
         self.assertIn("did you mean `upper`?", e.hint)
 
+    def test_json_in_prompt_string(self):
+        src = 'fn main() {\n    print("""\n    {\n        "recipient": "<IBAN>"\n    }\n    """)\n}\n'
+        e = self.one(src)
+        self.assertEqual(e.code, "E103")
+        self.assertIn("for a literal brace", e.hint)
+
+    def test_lexer_error_inside_interpolation(self):
+        e = self.one('fn main() {\n    print("y {true|false}")\n}\n')
+        self.assertEqual(e.code, "E101")
+        self.assertTrue(e.hint.startswith("`{` inside a string starts an interpolation"), e.hint)
+        self.assertEqual(e.hint.count("literal brace"), 1)
+
+    def test_escaped_braces_are_fine(self):
+        self.assertEqual(diag('fn main() {\n    print("\\{\\"a\\": 1\\}")\n}\n'), [])
+
+    def test_none_as_variant_name(self):
+        e = self.one("enum Action { send, none }\nfn main() {}\n")
+        self.assertIn("`skip`", e.hint)
+
+    def test_other_keyword_as_name_keeps_old_hint(self):
+        e = self.one("enum Action { send, match }\nfn main() {}\n")
+        self.assertIn("keywords are reserved", e.hint)
+
+    def test_type_defined_twice_names_first_line(self):
+        for kw in ("type T = { a: Int }", "enum T { a, b }"):
+            e = self.one(f"type T = {{ a: Int }}\n\n{kw}\nfn main() {{}}\n")
+            self.assertIn("already defined (line 1)", e.message)
+
+    def test_nested_interpolation_hint_once(self):
+        e = self.one('fn main() {\n    print("a {"b {1|2}"}")\n}\n')
+        self.assertEqual(e.hint.count("literal brace"), 1, e.hint)
+
+    def test_too_deep_strings_keep_their_hint(self):
+        from sipar.parser import MAX_STR_NESTING
+        n = MAX_STR_NESTING + 1
+        src = "fn main() {\n    print(" + '"{' * n + "1" + '}"' * n + ")\n}\n"
+        e = self.one(src)
+        self.assertEqual(e.code, "E115")
+        self.assertNotIn("literal brace", e.hint)
+
 
 if __name__ == "__main__":
     unittest.main()

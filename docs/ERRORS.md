@@ -68,7 +68,7 @@ let X = "a\qb"
 ```
 
 ### E103 — bad interpolation
-Empty `{}`, unmatched `}`, extra tokens inside `{...}`. Write `\{` `\}` for literal braces.
+Empty `{}`, unmatched `}`, extra tokens inside `{...}`. Write `\{` `\}` for literal braces. Any error inside a `{...}` (often JSON pasted into an `ai fn` prompt) carries this hint.
 ```sipar
 let X = "price: {}"
 ```
