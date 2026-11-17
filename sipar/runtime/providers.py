@@ -10,6 +10,7 @@ import http.client
 import json
 import os
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -282,6 +283,42 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
                                       f"redirects are not followed")
 
 
+RATE_STATUS = (429, 503)
+
+
+def rate_retries() -> int:
+    """SIPAR_AI_RATE_RETRIES: how many times a 429 / 503 reply is retried in place (default 0: the reply is an
+    `ai` error at once and a model chain moves on). Each wait follows Retry-After (else 2, 4, 8 ... s, at most
+    60 s) and must end before the call's deadline (SIPAR_AI_TIMEOUT or the budget)."""
+    raw = os.environ.get("SIPAR_AI_RATE_RETRIES", "")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 0
+    return n if 0 <= n <= 100 else 0
+
+
+def rate_wait(e: urllib.error.HTTPError, left: int, deadline: float) -> float | None:
+    """Seconds to wait before retrying e, or None when it is not retried."""
+    if e.code not in RATE_STATUS or left <= 0:
+        return None
+    wait = None
+    ra = (e.headers or {}).get("Retry-After") if e.headers is not None else None
+    if ra is not None:
+        try:
+            wait = float(ra)
+        except ValueError:
+            wait = None
+        if wait is not None and not (0 <= wait <= 3600):    # nan / inf / negative: the backoff below
+            wait = None
+    if wait is None:
+        used = rate_retries() - left
+        wait = float(min(2 ** (used + 1), 60))
+    if time.monotonic() + wait >= deadline - 0.05:
+        return None
+    return wait
+
+
 class OpenAICompatProvider:
     def __init__(self, name: str, base_url: str | None = None, key_env: str | None = None):
         if name not in BASES:
@@ -311,10 +348,23 @@ class OpenAICompatProvider:
             headers["Authorization"] = "Bearer " + key
         if self.name == "openrouter":
             headers["X-Title"] = "Sipar"
-        req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps(body).encode(),
-                                     headers=headers, method="POST")
+        data_out = json.dumps(body).encode()
+        deadline = time.monotonic() + max(timeout, 0.1)
+        retries = rate_retries()
         try:
-            raw = netio.fetch(req, max(timeout, 0.1), 20_000_000, (_NoRedirect(self.name),))
+            while True:
+                req = urllib.request.Request(self.base + "/chat/completions", data=data_out, headers=headers,
+                                             method="POST")
+                try:
+                    raw = netio.fetch(req, max(deadline - time.monotonic(), 0.1), 20_000_000,
+                                      (_NoRedirect(self.name),))
+                    break
+                except urllib.error.HTTPError as e:
+                    wait = rate_wait(e, retries, deadline)
+                    if wait is None:
+                        raise
+                    retries -= 1
+                    time.sleep(wait)
         except netio.DeadlineExceeded:
             raise SiparRuntimeError("ai", f"{self.name}: request timed out after {timeout:.3g}s")
         except urllib.error.HTTPError as e:

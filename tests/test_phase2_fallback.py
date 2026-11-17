@@ -36,6 +36,11 @@ class ChatServer:
                 how = srv.plan.get(model, ("ok", '"default"'))
                 if how[0] == "status":
                     return self._send(how[1], json.dumps({"error": {"message": f"fail {how[1]}"}}))
+                if how[0] == "flaky":                   # ("flaky", code, n_failures, retry_after|None, text)
+                    if srv.hits.count(model) <= how[2]:
+                        return self._send(how[1], json.dumps({"error": {"message": "slow down"}}), how[3])
+                    return self._send(200, json.dumps({"choices": [{"message": {"content": how[4]}}],
+                                                       "usage": {"prompt_tokens": 10, "completion_tokens": 2}}))
                 if how[0] == "sleep":
                     time.sleep(how[1])
                     return self._send(200, json.dumps({"choices": [{"message": {"content": '"late"'}}]}))
@@ -45,10 +50,12 @@ class ChatServer:
                 return self._send(200, json.dumps({"choices": [{"message": {"content": how[1]}}],
                                                    "usage": {"prompt_tokens": 10, "completion_tokens": 2}}))
 
-            def _send(self, code, text):
+            def _send(self, code, text, retry_after=None):
                 data = text.encode()
                 try:
                     self.send_response(code)
+                    if retry_after is not None:
+                        self.send_header("Retry-After", str(retry_after))
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
@@ -347,6 +354,84 @@ class TestModelAttrChecker(unittest.TestCase):
     def test_good_chains_pass(self):
         for good in ("mock", "openrouter/qwen/qwen3-coder | gemini/gemini-2.5-flash | mock", "local/x|mock"):
             self.assertEqual(self.codes(good), [], good)
+
+
+
+class TestRateRetry(Base):
+    """SIPAR_AI_RATE_RETRIES: a 429 / 503 reply is retried in place, within the call's deadline."""
+
+    def go(self, plan, chain="local/m", retries="3", timeout="5"):
+        env = self.server(plan)
+        env.update({"SIPAR_AI_RATE_RETRIES": retries, "SIPAR_AI_TIMEOUT": timeout})
+        p = self.prog(chain)
+        j = Journal()
+        try:
+            return p.run(journal=j, env=env), j, None
+        except Exception as e:                  # noqa: BLE001 - the test checks the error
+            return None, j, e
+
+    def test_429_retried_with_retry_after(self):
+        t0 = time.monotonic()
+        out, j, e = self.go({"m": ("flaky", 429, 2, "0", '"after retry"')})
+        self.assertIsNone(e)
+        self.assertEqual(out.strip(), "after retry")
+        self.assertEqual(self.srv.hits, ["m", "m", "m"])
+        self.assertEqual(len(self.ai_entries(j)), 1)          # one journal entry: the retries are inside it
+        self.assertLess(time.monotonic() - t0, 3)
+
+    def test_503_retried(self):
+        out, j, e = self.go({"m": ("flaky", 503, 1, "0", '"ok503"')})
+        self.assertEqual(out.strip(), "ok503")
+
+    def test_default_no_retry(self):
+        out, j, e = self.go({"m": ("flaky", 429, 1, "0", '"x"')}, retries="")
+        self.assertIsNotNone(e)
+        self.assertIn("HTTP 429", str(e))
+        self.assertEqual(self.srv.hits, ["m"])
+
+    def test_retries_run_out(self):
+        out, j, e = self.go({"m": ("flaky", 429, 5, "0", '"x"')}, retries="2")
+        self.assertIn("HTTP 429", str(e))
+        self.assertEqual(self.srv.hits, ["m", "m", "m"])
+
+    def test_500_not_retried(self):
+        out, j, e = self.go({"m": ("flaky", 500, 1, "0", '"x"')})
+        self.assertIn("HTTP 500", str(e))
+        self.assertEqual(self.srv.hits, ["m"])
+
+    def test_wait_past_deadline_not_retried(self):
+        t0 = time.monotonic()
+        out, j, e = self.go({"m": ("flaky", 429, 1, "30", '"x"')}, timeout="2")
+        self.assertIn("HTTP 429", str(e))
+        self.assertEqual(self.srv.hits, ["m"])
+        self.assertLess(time.monotonic() - t0, 2)
+
+    def test_backoff_without_retry_after(self):
+        t0 = time.monotonic()
+        out, j, e = self.go({"m": ("flaky", 429, 1, None, '"backoff"')})
+        self.assertEqual(out.strip(), "backoff")
+        self.assertGreaterEqual(time.monotonic() - t0, 1.9)     # first backoff: 2 s
+
+    def test_bad_retry_after_uses_backoff(self):
+        for ra in ("nan", "-5", "soon"):
+            self.srv = None
+            out, j, e = self.go({"m": ("flaky", 429, 1, ra, '"ok"')})
+            self.assertEqual(out.strip(), "ok", ra)
+            self.srv.close()
+            self.srv = None
+
+    def test_bad_setting_means_no_retry(self):
+        for bad in ("-1", "abc", "1000"):
+            out, j, e = self.go({"m": ("flaky", 429, 1, "0", '"x"')}, retries=bad)
+            self.assertIn("HTTP 429", str(e), bad)
+            self.srv.close()
+            self.srv = None
+
+    def test_chain_moves_on_after_retries(self):
+        out, j, e = self.go({"bad": ("flaky", 429, 9, "0", '"x"'), "good": ("ok", '"g"')},
+                            chain="local/bad | local/good", retries="1")
+        self.assertEqual(out.strip(), "g")
+        self.assertEqual(self.srv.hits, ["bad", "bad", "good"])
 
 
 if __name__ == "__main__":

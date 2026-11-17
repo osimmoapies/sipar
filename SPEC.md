@@ -440,7 +440,10 @@ labelled condition raised inside `try`. Then:
   `sort`) cannot overrun it; the check goes through the journaled clock, so replay stops at the same step.
   Outside a budget the same whole-request limits
   come from `SIPAR_HTTP_TIMEOUT` (default 30 s, error kind `io`), `SIPAR_AI_TIMEOUT` (120 s, `ai`) and
-  `SIPAR_SHELL_TIMEOUT` (120 s, `io`); a timed-out command is killed with its whole process group. These
+  `SIPAR_SHELL_TIMEOUT` (120 s, `io`); a timed-out command is killed with its whole process group.
+  `SIPAR_AI_RATE_RETRIES` (0..100, default 0; anything else means 0) retries a model reply with HTTP 429 or 503
+  in place, waiting `Retry-After` seconds (else 2, 4, 8 ... up to 60 s); a wait that would pass the call's
+  deadline is not taken. The retries are one attempt: one journal entry, and a chain moves on only after them. These
   variables share one rule: a finite number of seconds above 0 and at most 86400; anything else (`inf`, `nan`,
   `0`, negative, text) means the default. `SIPAR_MAX_DEPTH` (call depth, default 800) accepts 1..20000, else
   800; the whole range works (the parser, checker and interpreter run on a thread with a 1 GiB stack). `SIPAR_PRICE_IN/OUT` above 1e9 count as not set.
