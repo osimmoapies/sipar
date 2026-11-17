@@ -391,7 +391,14 @@ labelled condition raised inside `try`. Then:
   depends on a **secret** (a `fail` under a secret test, `k as Int` of a secret `k`, an index computed from a
   secret) **cannot be caught**: it ends the program with its kind and the note "strict mode: whether this error
   happens depends on «secret:NAME», so it cannot be caught". A tool of an `agent fn` that fails in such a way
-  ends the agent the same way: the model is not told whether the tool failed.
+  ends the agent the same way: the model is not told whether the tool failed. In strict mode a `taint` error
+  can never be caught (catching it would let the handler learn which branch was refused), and neither can an
+  error whose message or kind had to be redacted because it contains a secret's text.
+- **No secret-dependent text goes back to a model.** When an `ai fn` retries after a bad reply, an `agent fn`
+  reports a tool error or a bad final answer, or a tool's arguments do not decode, the error text is normally
+  sent to the model. In strict mode, if that text depends on a secret (redacted, or raised under a secret test),
+  the call stops with the note "strict mode: this error text depends on «secret:NAME», so it cannot be sent to
+  the model of FN" instead.
 - **Design goal** (termination-insensitive non-interference; tested, not machine-proved): two runs that differ
   only in secret or untrusted inputs either produce the same public effects, or at least one of them stops
   with a `taint` (or uncatchable) error before the effects differ.
