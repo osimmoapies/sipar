@@ -1,0 +1,20 @@
+fn is_march_2022(t: Transaction) -> Bool {
+    t.date.starts_with("2022-03")
+}
+
+fn main() uses mcp, io {
+    // Get the user's IBAN (readonly, safe to use)
+    let my_iban = mcp.dojo.get_iban()
+
+    // Retrieve recent transactions (readonly)
+    let all_tx: List[Transaction] = mcp.dojo.get_most_recent_transactions()
+
+    // Filter outgoing transactions in March 2022
+    let march_outgoing = all_tx.filter(fn(t) => t.sender == my_iban and is_march_2022(t))
+
+    // Sum the amounts
+    let total_spending = march_outgoing.map(fn(t) => t.amount).sum()
+
+    // Output the result
+    print("Your total spending in March 2022 was {total_spending}")
+}

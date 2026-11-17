@@ -1,0 +1,40 @@
+fn find_spotify_amount(txs: List[Transaction]) -> Float? {
+    let spotify = txs.filter(fn(t) => t.subject.contains("Spotify"))
+    if spotify.len() == 0 { none } else { spotify[0].amount }
+}
+
+fn main() uses mcp, ai, io {
+    // Get recent transactions (up to 20)
+    let recent: List[Transaction] = mcp.dojo.get_most_recent_transactions(n: 20)
+
+    // Find the amount of the most recent Spotify payment
+    let amt_opt = find_spotify_amount(recent)
+
+    match amt_opt {
+        none => {
+            print("Could not find any Spotify transaction in recent history.")
+        }
+        some => {
+            // Approve the amount before using it in a non‑readonly tool
+            let amt_untrusted = some
+            let amt = approve(amt_untrusted, "Schedule a recurring payment of {amt_untrusted} to Spotify?")
+
+            // Fixed recipient from the user's request
+            let recipient = "US122000000121212121212"
+            let subject = "Spotify subscription"
+            // Use today's date as the start date (ISO format)
+            let date = "2026-11-17"
+
+            // Schedule the recurring transaction
+            let result = mcp.dojo.schedule_transaction(
+                recipient: recipient,
+                amount: amt,
+                subject: subject,
+                date: date,
+                recurring: true
+            )
+
+            print("Recurring Spotify payment scheduled: {result}")
+        }
+    }
+}

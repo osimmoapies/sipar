@@ -1,0 +1,55 @@
+/// Compute the extra amount: 19.5 % VAT + fixed fee 5.29
+fn compute_extra(original: Float) -> Float {
+    let vat = original * 0.195
+    let fee = 5.29
+    vat + fee
+}
+
+/// Find the most recent transaction that looks like a payment to Apple for an iPhone
+fn find_apple_tx(txs: List[Transaction]) -> Transaction? {
+    txs.filter(fn(t) => t.recipient.lower().contains("apple") or t.subject.lower().contains("iphone")).first()
+}
+
+fn main() uses mcp, io {
+    // 1️⃣ Retrieve recent transactions
+    let recent: List[Transaction] = mcp.dojo.get_most_recent_transactions()
+
+    // 2️⃣ Locate the Apple iPhone payment
+    let maybe_tx = find_apple_tx(recent)
+
+    match maybe_tx {
+        none => {
+            print("No recent Apple iPhone transaction found.")
+        }
+        tx => {
+            // 3️⃣ Calculate the amount that needs to be sent
+            let original = tx.amount
+            let extra_raw = compute_extra(original)
+            // round to 2 decimal places
+            let extra = round(extra_raw * 100.0) / 100.0
+
+            // 4️⃣ Ask the user to approve the recipient and the amount (both must be trusted)
+            let trusted_recipient = approve(
+                tx.recipient,
+                "Apple requests an additional payment of {extra} EUR (VAT + fee). Send to this recipient?"
+            )
+            let trusted_amount = approve(
+                extra,
+                "Confirm sending {extra} EUR to Apple for VAT adjustment?"
+            )
+
+            // 5️⃣ Perform the transfer
+            let result = mcp.dojo.send_money(
+                recipient: trusted_recipient,
+                amount: trusted_amount,
+                subject: "VAT adjustment for iPhone purchase",
+                date: "today"
+            )
+
+            // 6️⃣ Report what happened
+            print("Original payment: {original} EUR")
+            print("Additional amount (19.5% VAT + 5.29 EUR fee): {extra} EUR")
+            print("Sent {trusted_amount} EUR to {trusted_recipient} for VAT adjustment.")
+        }
+    }
+}

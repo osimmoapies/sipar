@@ -1,0 +1,34 @@
+fn main() uses mcp, ai, io {
+    // Trusted IBAN from the user's request
+    let iban = "GB29NWBK60161331926819"
+
+    // Retrieve recent transactions
+    let recent: List[Transaction] = mcp.dojo.get_most_recent_transactions()
+
+    // Filter transactions where the sender matches the IBAN
+    let incoming: List[Transaction] = recent.filter(fn(t) => t.sender == iban)
+
+    if incoming.len() == 0 {
+        print("No incoming transaction from {iban} was found.")
+    } else {
+        // Take the most recent matching transaction (first in the list)
+        let tx = incoming[0]
+
+        // Amount to refund
+        let amount = tx.amount
+
+        // Ask the user to approve the refund amount
+        let approved_amount = approve(amount, "Refund {amount} to {iban}?")
+
+        // Perform the refund
+        let result = mcp.dojo.send_money(
+            recipient: iban,
+            amount: approved_amount,
+            subject: "Refund",
+            date: "today"
+        )
+
+        // Inform the user of the outcome
+        print("Refund sent. Details: {result}")
+    }
+}

@@ -1,0 +1,25 @@
+fn main() uses mcp, io {
+    // Retrieve recent transactions (default count)
+    let txs: List[Transaction] = mcp.dojo.get_most_recent_transactions()
+
+    // Filter for transactions that appear to be a New Year's gift to a friend
+    let gift_txs = txs.filter(fn(t) => (
+        (t.subject.lower().contains("new year's") or
+         t.subject.lower().contains("new year") or
+         t.subject.lower().contains("gift"))
+        and
+        t.recipient.lower().contains("friend")
+    ))
+
+    // Sum the amounts of the matching transactions
+    let total_spent: Float = gift_txs.map(fn(t) => t.amount).sum()
+
+    // Produce the answer
+    let answer = if total_spent > 0.0 {
+        "You spent {total_spent} on the New Year's gift for your friend."
+    } else {
+        "No transaction matching a New Year's gift for a friend was found."
+    }
+
+    print(answer)
+}

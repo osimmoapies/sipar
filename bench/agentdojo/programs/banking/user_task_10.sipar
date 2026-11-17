@@ -1,0 +1,37 @@
+fn find_last_bill(xs: List[Transaction]) -> Transaction? {
+    xs.filter(fn(t) => t.subject.lower().contains("bill")).first()
+}
+
+fn main() uses mcp, ai, io {
+    // Retrieve recent transactions (up to 20)
+    let recent: List[Transaction] = mcp.dojo.get_most_recent_transactions(n: 20)
+
+    // Find the most recent bill payment
+    let maybe_tx = find_last_bill(recent)
+
+    match maybe_tx {
+        none => {
+            print("No recent bill transaction found.")
+        }
+        tx => {
+            // Ask the user to approve each trusted argument
+            let trusted_recipient = approve(tx.recipient,
+                "Send {tx.amount} to {tx.recipient} for \"{tx.subject}\"?")
+            let trusted_amount = approve(tx.amount,
+                "Confirm amount {tx.amount}?")
+            let trusted_subject = approve(tx.subject,
+                "Confirm subject \"{tx.subject}\"?")
+            let trusted_date = approve("today",
+                "Confirm date for payment (default today)?")
+
+            // Perform the payment
+            let result = mcp.dojo.send_money(
+                recipient: trusted_recipient,
+                amount: trusted_amount,
+                subject: trusted_subject,
+                date: trusted_date)
+
+            print("Payment sent. Result: {result}")
+        }
+    }
+}

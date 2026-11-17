@@ -1,0 +1,51 @@
+/// Find the first scheduled transaction whose subject mentions rent.
+fn find_rent_tx(txs: List[Transaction]) -> Transaction? {
+    txs.filter(fn(t) => t.subject.lower().contains("rent")).first()
+}
+
+/// Format a transaction for display.
+fn fmt_tx(t: Transaction) -> Str {
+    "ID: {t.id}, Recipient: {t.recipient}, Amount: {t.amount}, Subject: {t.subject}, Date: {t.date}, Recurring: {t.recurring}"
+}
+
+fn main() uses mcp, io {
+    // Retrieve all scheduled transactions (readonly, untrusted)
+    let scheduled: List[Transaction] = mcp.dojo.get_scheduled_transactions()
+
+    // Look for a rent payment
+    let rent_opt = find_rent_tx(scheduled)
+
+    // If none, inform the user and exit
+    let rent = rent_opt ?? {
+        print("No scheduled rent payment found.")
+        return
+    }
+
+    // Show current rent payment details
+    print("Current rent payment:")
+    print(fmt_tx(rent))
+
+    // Ask the user to confirm updating this payment
+    let trusted_id = approve(rent.id, "Do you want to update the rent payment (ID {rent.id})?")
+
+    // Confirm each field (approval makes them trusted)
+    let trusted_recipient = approve(rent.recipient, "Confirm recipient for the rent payment:")
+    let trusted_amount = approve(rent.amount, "Confirm amount for the rent payment:")
+    let trusted_subject = approve(rent.subject, "Confirm subject for the rent payment:")
+    let trusted_date = approve(rent.date, "Confirm date for the rent payment:")
+    let trusted_recurring = approve(rent.recurring, "Should this rent payment be recurring? (true/false)")
+
+    // Perform the update (all arguments must be trusted)
+    let result = mcp.dojo.update_scheduled_transaction(
+        id: trusted_id,
+        recipient: trusted_recipient,
+        amount: trusted_amount,
+        subject: trusted_subject,
+        date: trusted_date,
+        recurring: trusted_recurring
+    )
+
+    // Show the outcome
+    print("Rent payment updated. Result:")
+    print(result)
+}
