@@ -193,6 +193,7 @@ def run_ai(rt, decl: A.FnDecl, prompt: Any) -> Any:
         except SiparRuntimeError as e:
             if e.kind != "decode":
                 raise
+            _guard_feedback(e, decl.name)
             last = e.message
             messages.append({"role": "assistant", "content": text})
             messages.append({"role": "user", "content": f"Your reply was invalid: {e.message}\n"
@@ -238,6 +239,17 @@ def _protocol_obj(text: str) -> dict | None:
 FATAL_TOOL_ERRORS = {"taint", "capability", "budget", "replay", "denied"}
 
 
+def _guard_feedback(e: SiparRuntimeError, who: str) -> None:
+    """Strict mode (SPEC §6.2): an error text about to be fed back to a model must not depend on a secret.
+    When redaction rewrote it (the model's reply or arguments matched a secret), stop instead of telling."""
+    sec = e.leak_labels() if FLOW.on else []
+    if sec:
+        e.fatal = True
+        e.message += (f" — strict mode: this error text depends on «{', '.join(sec)}», so it cannot be sent "
+                      f"to the model of {who}")
+        raise e
+
+
 def run_agent(rt, decl: A.FnDecl, prompt: Any) -> Any:
     _check_prompt(decl.name, prompt)
     attrs = attr_values(decl)
@@ -278,6 +290,7 @@ def run_agent(rt, decl: A.FnDecl, prompt: Any) -> Any:
             except SiparRuntimeError as e:
                 if e.kind != "decode":
                     raise
+                _guard_feedback(e, decl.name)
                 feedback(f"Your final answer is invalid: {e.message}. It must match {type_str(decl.ret)}.")
                 continue
         name = obj.get("tool")
@@ -304,6 +317,7 @@ def run_agent(rt, decl: A.FnDecl, prompt: Any) -> Any:
         except SiparRuntimeError as e:
             if e.kind != "decode":
                 raise
+            _guard_feedback(e, decl.name)
             feedback(f"Bad arguments for {name}: {e.message}")
             continue
         try:
@@ -311,7 +325,8 @@ def run_agent(rt, decl: A.FnDecl, prompt: Any) -> Any:
         except SiparRuntimeError as e:
             if e.kind in FATAL_TOOL_ERRORS or getattr(e, "fatal", False):
                 raise
-            sec = sorted(x for x in e.labels | getattr(e, "flow", frozenset()) if x.startswith("secret:"))
+            sec = sorted({x for x in e.labels | getattr(e, "flow", frozenset()) if x.startswith("secret:")}
+                         | set(e.leak_labels()))
             if FLOW.on and sec:                 # strict: whether the tool failed depends on a secret (SPEC §6.2)
                 e.fatal = True
                 e.message += (f" — strict mode: whether tool {name} failed depends on «{', '.join(sec)}», so the "

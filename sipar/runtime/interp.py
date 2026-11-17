@@ -1000,7 +1000,11 @@ class Interp:
                 self.tpc, self.try_ctx = outer
                 L = (e.labels | getattr(e, "flow", EMPTY) | labels_of(getattr(e, "value", None))
                      | labels_of(getattr(e, "kind_value", None)) | inner) - pc0
-                sec = sorted(x for x in L if x.startswith("secret:"))
+                sec = sorted({x for x in L if x.startswith("secret:")} | set(e.leak_labels()))
+                if e.kind == "taint" and not sec:   # echo-labelling decides taint errors: never catchable here
+                    e.fatal = True
+                    e.message += " — strict mode: a secret-flow (taint) error cannot be caught"
+                    raise
                 if sec:
                     e.fatal = True
                     e.message += (f" — strict mode: whether this error happens depends on «{', '.join(sec)}», "

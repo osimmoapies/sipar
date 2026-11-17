@@ -500,6 +500,17 @@ class SiparRuntimeError(Exception):
     def secret_labels(self) -> list:
         return sorted(l for l in self.labels if l.startswith("secret:"))
 
+    def leak_labels(self) -> list:
+        """Every secret this error's existence or text may reveal: the secret labels of its operands, every
+        secret whose text redaction finds in the message or kind, and every «secret:NAME» marker already in it. When
+        redaction rewrote the message, the rewritten text itself depends on that secret (strict mode, SPEC §6.2)."""
+        out = set(self.secret_labels())
+        for raw in (self._message, self._kind):          # fail(kind, ...) takes the kind from program text too
+            for _s, _e, marks in redact_spans(raw, getattr(self, "_reg", None)):
+                out.update(m.strip("«»") for m in marks)
+            out.update(re.findall(r"«(secret:[^«»]+)»", raw))
+        return sorted(out)
+
     @property
     def kind(self) -> str:                    # fail(kind, ...) takes the kind from program text: redact it too
         return redact_text(self._kind, getattr(self, "_reg", None))

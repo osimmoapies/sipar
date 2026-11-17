@@ -242,5 +242,139 @@ class T_Agent(Base):
         self.assertEqual(out, "2\n")
 
 
+
+
+AGENT2 = ('/// Probe.\nfn probe(a: Str, b: Str) -> Int { ("{a}{b}") as Int }\n'
+          'agent fn ag2(goal: Str) -> Int { tools [probe]\n "Goal: {goal}" }\n'
+          'agent fn ag3(goal: Str) -> Mood { tools [probe]\n "Goal: {goal}" }\n'
+          'ai fn mood(q: Str) -> Mood { "{q}" }\n')
+K4 = {"K": "abcd", "SIPAR_STRICT": "0"}        # 4+ chars: registered for redaction
+K4_OTHER = {"K": "wxyz", "SIPAR_STRICT": "0"}
+CAUGHT = "cannot be caught"
+
+
+class T_Leaks(Base):
+    """Errors whose kind, text or existence a secret decides cannot be caught or fed back to a model in strict
+    mode (critic round 1: echo-labelled taint errors, redacted messages, agent tool errors, ai fn retries)."""
+
+    def run2(self, body, env, script=None, strict=True):
+        p = self.prog(K + body, strict, AGENT2)
+        return p, p.run(env=env, script=script or SCRIPT)
+
+    def err2(self, body, env, script=None):
+        p = self.prog(K + body, True, AGENT2)
+        return p, p.error(env=env, script=script or SCRIPT)
+
+    def test_taint_error_not_catchable(self):
+        _, e = self.err2('try { print(k) } catch e { print("caught") }', K4)
+        self.assertEqual(e.kind, "taint")
+        self.assertIn("secret-flow (taint) error cannot be caught", str(e))
+
+    def test_taint_error_catchable_without_strict(self):
+        _, out = self.run2('try { print(k) } catch e { print("caught") }', K4, strict=False)
+        self.assertEqual(out, "caught\n")
+
+    def test_echo_labelled_reply_taint_not_catchable(self):
+        # the model's reply equals the secret: echo-labelling makes print fail; catching it would tell
+        p, e = self.err2('let r = txt("q")\ntry { print(r) } catch e { print("caught") }', K4,
+                         {"txt": ["abcd"]})
+        self.assertEqual(e.kind, "taint")
+        self.assertNotIn("caught", p.out)
+
+    def test_memory_key_bruteforce_stops(self):
+        body = ('for c in ["wxyz", "abcd"] {\n memory.save(c, 1)\n'
+                ' try { memory.save("t", memory.keys().join(",")) } catch e { print("PIN=" + c) }\n'
+                ' memory.delete(c)\n}')
+        for env in (K4, K4_OTHER):
+            p, e = self.err2(body, env)
+            self.assertEqual(e.kind, "taint")
+            self.assertNotIn("PIN=", p.out)
+
+    def test_redacted_message_not_catchable(self):
+        body = 'try { let n = ("ab" + "cd") as Int\n print(n) } catch e { print(e.message) }'
+        _, e = self.err2(body, K4)
+        self.assertIn(f"depends on «secret:K», so it {CAUGHT}", str(e))
+        _, out = self.run2(body, K4_OTHER)                 # nothing redacted: an ordinary catch
+        self.assertEqual(out, 'cannot parse "abcd" as Int\n')
+
+    def test_redacted_kind_not_catchable(self):
+        body = 'try { fail("ab" + "cd", "m") } catch e { print("caught") }'
+        _, e = self.err2(body, K4)
+        self.assertIn(CAUGHT, str(e))
+        _, out = self.run2(body, K4_OTHER)
+        self.assertEqual(out, "caught\n")
+
+    def test_redacted_message_catchable_without_strict(self):
+        _, out = self.run2('try { let n = ("ab" + "cd") as Int\n print(n) } catch e { print(e.message) }',
+                           K4, strict=False)
+        self.assertEqual(out, 'cannot parse "«secret:K»" as Int\n')
+
+    def test_agent_tool_error_with_redaction_not_fed_back(self):
+        script = {"ag2": [{"tool": "probe", "args": {"a": "ab", "b": "cd"}}, {"final": 2}]}
+        p, e = self.err2('print(ag2("go"))', K4, script)
+        self.assertIn("whether tool probe failed depends on «secret:K»", str(e))
+        self.assertEqual(len(p.last.providers["mock"].calls), 1)
+        p, out = self.run2('print(ag2("go"))', K4_OTHER, script)
+        self.assertEqual(out, "2\n")
+        self.assertIn('cannot parse "abcd"', p.last.providers["mock"].calls[1]["messages"][-1]["content"])
+
+    def test_agent_final_answer_error_with_redaction_not_fed_back(self):
+        script = {"ag3": [{"final": "abcd"}, {"final": "sad"}]}
+        p, e = self.err2('print(ag3("go"))', K4, script)
+        self.assertIn("cannot be sent to the model of ag3", str(e))
+        self.assertEqual(len(p.last.providers["mock"].calls), 1)
+        p, out = self.run2('print(ag3("go"))', K4_OTHER, script)
+        self.assertEqual(out, "sad\n")
+        self.assertIn("'abcd' is not a variant", p.last.providers["mock"].calls[1]["messages"][-1]["content"])
+
+    def test_agent_bad_args_with_redaction_not_fed_back(self):
+        script = {"ag2": [{"tool": "probe", "args": {"a": "x", "b": "y", "abcd": 1}}, {"final": 2}]}
+        p, e = self.err2('print(ag2("go"))', K4, script)
+        self.assertIn("cannot be sent to the model of ag2", str(e))
+        self.assertEqual(len(p.last.providers["mock"].calls), 1)
+        _, out = self.run2('print(ag2("go"))', K4_OTHER, script)
+        self.assertEqual(out, "2\n")
+
+    def test_ai_fn_retry_with_redaction_not_fed_back(self):
+        script = {"mood": ['"abcd"', '"sad"']}
+        p, e = self.err2('print(mood("q"))', K4, script)
+        self.assertIn("cannot be sent to the model of mood", str(e))
+        self.assertEqual(len(p.last.providers["mock"].calls), 1)
+        _, out = self.run2('print(mood("q"))', K4_OTHER, script)
+        self.assertEqual(out, "sad\n")
+
+    def test_ai_fn_retry_fed_back_without_strict(self):
+        p, out = self.run2('print(mood("q"))', K4, {"mood": ['"abcd"', '"sad"']}, strict=False)
+        self.assertEqual(out, "sad\n")
+        self.assertIn("«secret:K»", p.last.providers["mock"].calls[1]["messages"][-1]["content"])
+
+
+class T_Api(unittest.TestCase):
+    """The Python API returns plain bool / None for strict-mode labelled values and refuses a secret one."""
+
+    def test_api_results(self):
+        import os
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        import sipar
+        d = tempfile.mkdtemp(prefix="sipar_strict_")
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "a.sipar")
+        with open(path, "w") as fh:
+            fh.write('strict\nallow secret ["K"]\nfn chk() -> Bool uses secret { let k = env.secret("K")\n'
+                     ' k == "abc" }\nfn pub(x: Int) -> Bool { x > 1 }\n'
+                     'fn opt(x: Int) -> Int? { if x > 1 { x } else { none } }\n')
+        p = sipar.load(path)
+        with mock.patch.dict(os.environ, {"K": "abc"}):
+            self.assertIs(p.call("pub", 2), True)
+            self.assertIsNone(p.call("opt", 0))
+            self.assertEqual(p.call("opt", 5), 5)
+            with self.assertRaises(sipar.SiparError) as cm:
+                p.call("chk")
+        self.assertEqual(cm.exception.kind, "taint")
+
+
 if __name__ == "__main__":
     unittest.main()
