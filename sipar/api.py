@@ -164,8 +164,9 @@ class Program:
                             raise SiparRuntimeError("value", f"{name}.{p.name}: an argument is {TOO_DEEP}")
                         vals[p.name] = from_json(_py_in(given[p.name], p.type, it.tenv, f"{name}.{p.name}"),
                                                  p.type, it.tenv, EMPTY, f"{name}.{p.name}")
-                it.init_globals()
-                return _py_out(it.call_fn(decl, [], vals), f"{name}()")
+                with it.flow():
+                    it.init_globals()
+                    return _py_out(it.call_fn(decl, [], vals), f"{name}()")
             return call_deep(body)
         except SiparRuntimeError as e:
             if e.file == self._run_file:
@@ -302,7 +303,7 @@ def _py_out(v: Any, path: str) -> Any:
     cycle check, not a copy per level) and the error path is built only when an error is raised. A secret in
     any leaf or map key, or in the own labels of a picked container (SPEC §6), raises `taint`; nesting deeper than decode.MAX_VALUE_DEPTH raises `value`."""
     from .runtime.decode import MAX_VALUE_DEPTH
-    from .runtime.values import EnumVal, LDict, LFloat, LFn, LInt, LList, LRecord, LStr, RangeVal, Record
+    from .runtime.values import EnumVal, LDict, LFloat, LFn, LInt, LList, LRecord, LStr, RangeVal, Record, plain, top_labels
 
     on_path: set[int] = set()
     trail: list[Any] = []                      # keys / indexes of the current position, for error paths only
@@ -311,8 +312,7 @@ def _py_out(v: Any, path: str) -> Any:
         return path + "".join(f"[{t}]" if isinstance(t, int) else f".{t}" for t in trail)
 
     def secret(x: Any) -> bool:      # a secret leaf, or a list/map/record/function/range picked or built with
-        return (isinstance(x, (LStr, LInt, LFloat, RangeVal, LList, LDict, LRecord, LFn))    # a secret (SPEC §6)
-                and any(l.startswith("secret:") for l in x.labels))
+        return any(l.startswith("secret:") for l in top_labels(x))     # a secret (SPEC §6; strict: Bool, none, enum)
 
     def step(t: Any, y: Any) -> Any:
         if len(trail) >= MAX_VALUE_DEPTH:      # a fixed limit, not the stack: the host must be able to walk it
@@ -328,6 +328,9 @@ def _py_out(v: Any, path: str) -> Any:
             return x
         if secret(x):
             raise SiparError("taint", f"{where()}: the result contains a secret; it cannot be returned to Python")
+        x = plain(x)                    # strict mode: a labelled Bool / none
+        if x is None or x is True or x is False:
+            return x
         if isinstance(x, str):
             return str.__str__(x)
         if isinstance(x, int):

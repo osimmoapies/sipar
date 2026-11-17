@@ -9,7 +9,7 @@ from .. import ast as A
 from ..errors import SiparRuntimeError
 from . import mcp as MCP
 from .decode import DECODER, PY_DECODER, from_json, json_loads, schema, type_str
-from .values import deep_label, dumps, mark_secrets, render, secrets_in, to_json, with_labels
+from .values import FLOW, deep_label, dumps, mark_secrets, render, secrets_in, to_json, with_labels
 
 FENCE = re.compile(r"```[A-Za-z0-9_+-]*[ \t]*\n?(.*?)```", re.S)
 # a number standing alone: not glued to letters, digits, "." or "-" ("payload2", "v2.0", "x-1", "1.2.3" are not numbers)
@@ -310,6 +310,12 @@ def run_agent(rt, decl: A.FnDecl, prompt: Any) -> Any:
             result = tool.call(rt, args) if getattr(tool, "is_mcp", False) else rt.call_fn(tool, [], args)
         except SiparRuntimeError as e:
             if e.kind in FATAL_TOOL_ERRORS or getattr(e, "fatal", False):
+                raise
+            sec = sorted(x for x in e.labels | getattr(e, "flow", frozenset()) if x.startswith("secret:"))
+            if FLOW.on and sec:                 # strict: whether the tool failed depends on a secret (SPEC §6.2)
+                e.fatal = True
+                e.message += (f" — strict mode: whether tool {name} failed depends on «{', '.join(sec)}», so the "
+                              "model cannot be told")
                 raise
             feedback(f"Tool {name} failed with error [{e.kind}]: {e.message}")
             continue

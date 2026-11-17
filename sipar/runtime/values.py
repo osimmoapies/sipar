@@ -6,12 +6,12 @@ Sipar type      Python representation
 Int             ``int``   or ``LInt(int)``    (``LInt`` carries ``.labels``)
 Float           ``float`` or ``LFloat(float)``
 Str             ``str``   or ``LStr(str)``
-Bool            ``bool``  (never labelled — choice declassification, SPEC §6)
-None            ``None``  (never labelled)
+Bool            ``bool``  (``LBool`` carries ``.labels`` in strict mode only, SPEC §6.2)
+None            ``None``  (``LNone`` carries ``.labels`` in strict mode only)
 List[T]         ``list``  (reference semantics come for free)
 Map[T]          ``dict``  with ``str``/``LStr`` keys, insertion ordered
 record          ``Record(type_name, fields: dict)``  (mutable, reference semantics)
-enum            ``EnumVal(enum, variant, fields: dict)``; payload-free values are never labelled
+enum            ``EnumVal(enum, variant, fields: dict)``; ``.labels`` is set in strict mode only
 fn values       ``Closure`` / ``FnRef`` / ``Builtin``
 
 Labels are ``frozenset[str]`` such as ``"untrusted:net:example.com"`` or ``"secret:API_KEY"``. They live on
@@ -19,6 +19,10 @@ Labels are ``frozenset[str]`` such as ``"untrusted:net:example.com"`` or ``"secr
 (``labels_of`` walks it). Every operation that creates a new leaf from other values gives it the union of the
 inputs' labels (``with_labels``). Operations that return an *existing* element of a container (``first``,
 ``xs[i]``) return that element unchanged; when the result is a leaf, the labels of the receiver/index are added.
+
+Strict mode (SPEC §6.2) also tracks implicit flows: ``FLOW.pc`` holds the labels of every condition that decided
+the code now running, Bool / none / enum values carry labels (``LBool``, ``LNone``, ``EnumVal.labels``), and a
+container written under a labelled ``pc`` gets labels of its own in ``FLOW.heap``. Every sink check adds ``pc``.
 """
 from __future__ import annotations
 
@@ -46,6 +50,79 @@ class LFloat(float):
     labels: frozenset = EMPTY
 
 
+class LBool:
+    """A Bool with labels (strict mode only): the result of a comparison or test of labelled data."""
+    __slots__ = ("v", "labels")
+
+    def __init__(self, v: Any, labels: frozenset):
+        self.v, self.labels = bool(v), labels
+
+    def __bool__(self):
+        return self.v
+
+    def __eq__(self, other):
+        if isinstance(other, LBool):
+            return self.v == other.v
+        if other is True or other is False:
+            return self.v == other
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.v)
+
+    def __repr__(self):
+        return f"LBool({self.v}, {sorted(self.labels)})"
+
+
+class LNone:
+    """A none with labels (strict mode only)."""
+    __slots__ = ("labels",)
+
+    def __init__(self, labels: frozenset):
+        self.labels = labels
+
+    def __bool__(self):
+        return False
+
+    def __eq__(self, other):
+        return other is None or isinstance(other, LNone)
+
+    def __hash__(self):
+        return hash(None)
+
+    def __repr__(self):
+        return f"LNone({sorted(self.labels)})"
+
+
+class _Flow(threading.local):
+    """Strict-mode state of the running thread: `on`, the labels `pc` of the conditions that decided the code
+    now running, and `heap` (id of a list / map / record's fields -> (that object, labels it carries itself))."""
+    on = False
+    pc: frozenset = EMPTY
+    heap: Any = None
+
+
+FLOW = _Flow()
+
+
+def is_bool(v: Any) -> bool:
+    return v is True or v is False or type(v) is LBool
+
+
+def is_none(v: Any) -> bool:
+    return v is None or type(v) is LNone
+
+
+def plain(v: Any) -> Any:
+    """LBool / LNone as the plain Python value."""
+    t = type(v)
+    if t is LBool:
+        return v.v
+    if t is LNone:
+        return None
+    return v
+
+
 class Record:
     __slots__ = ("type_name", "fields")
 
@@ -63,13 +140,15 @@ class Record:
 
 
 class EnumVal:
-    __slots__ = ("enum", "variant", "fields", "wrapped")
+    __slots__ = ("enum", "variant", "fields", "wrapped", "labels")
 
-    def __init__(self, enum: str, variant: str, fields: dict | None = None, wrapped: bool = False):
+    def __init__(self, enum: str, variant: str, fields: dict | None = None, wrapped: bool = False,
+                 labels: frozenset = EMPTY):
         self.enum = enum
         self.variant = variant
         self.fields = fields or {}
         self.wrapped = wrapped          # the enum has a field named `tag`: JSON form is {"variant": {fields}}
+        self.labels = labels            # strict mode: the labels of the choice of variant
 
     def __eq__(self, other):
         return (isinstance(other, EnumVal) and other.enum == self.enum and other.variant == self.variant
@@ -135,6 +214,11 @@ class RangeVal:
 # ------------------------------------------------------------------ kinds
 
 def kind_of(v: Any) -> str:
+    t = type(v)
+    if t is LBool:
+        return "Bool"
+    if t is LNone:
+        return "None"
     if v is None:
         return "None"
     if v is True or v is False:
@@ -169,8 +253,97 @@ def leaf_labels(v: Any) -> frozenset:
 
 
 def own_labels(v: Any) -> frozenset:
-    """Labels a container carries itself (not those of its items)."""
-    return v.labels if isinstance(v, (LList, LDict, LRecord, LFn)) else EMPTY
+    """Labels a container carries itself (not those of its items); in strict mode those it got in FLOW.heap
+    and an enum value's own."""
+    r = v.labels if isinstance(v, (LList, LDict, LRecord, LFn)) else EMPTY
+    heap = FLOW.heap
+    if heap:
+        key = v.fields if isinstance(v, Record) else v
+        h = heap.get(id(key))
+        if h is not None and h[0] is key:
+            r = r | h[1]
+    if isinstance(v, EnumVal) and v.labels:
+        r = r | v.labels
+    return r
+
+
+def heap_add(v: Any, labels: frozenset) -> None:
+    """Strict mode: list / map / record v carries `labels` itself from now on (it was written under them)."""
+    if not labels or not isinstance(v, (list, dict, Record)):
+        return
+    if FLOW.heap is None:
+        FLOW.heap = {}
+    key = v.fields if isinstance(v, Record) else v
+    h = FLOW.heap.get(id(key))
+    old = h[1] if h is not None and h[0] is key else EMPTY
+    if not labels <= old:
+        FLOW.heap[id(key)] = (key, old | labels)
+        mutated()
+
+
+def top_labels(v: Any) -> frozenset:
+    """The labels of v itself: a leaf's, a Bool's / none's / enum's, a container's own (not its items')."""
+    if isinstance(v, (LStr, LInt, LFloat, RangeVal, LFn, LBool, LNone)):
+        return v.labels
+    return own_labels(v)
+
+
+def taint(v: Any, labels: frozenset) -> Any:
+    """Strict mode: v as a value decided under `labels` (a branch, a loop, a match). Leaves, Bool, none, enum
+    values and function values are copies with the labels added; a list, map or record gets them itself (in
+    place: every alias of it was decided the same way)."""
+    if not labels:
+        return v
+    if v is None:
+        return LNone(labels)
+    t = type(v)
+    if t is LNone:
+        return v if labels <= v.labels else LNone(v.labels | labels)
+    if v is True or v is False:
+        return LBool(v, labels)
+    if t is LBool:
+        return v if labels <= v.labels else LBool(v.v, v.labels | labels)
+    if isinstance(v, (str, int, float)):
+        return with_labels(v, labels)
+    if isinstance(v, RangeVal):
+        return RangeVal(v.start, v.end, v.labels | labels)
+    if isinstance(v, (list, dict, Record)):
+        heap_add(v, labels)
+        return v
+    if isinstance(v, EnumVal):
+        return v if labels <= v.labels else EnumVal(v.enum, v.variant, v.fields, v.wrapped, v.labels | labels)
+    if isinstance(v, LFn):
+        return LFn(v.fn, v.labels | labels)
+    return LFn(v, labels)
+
+
+def deep_upgrade(v: Any, labels: frozenset, _seen: set | None = None) -> None:
+    """Strict mode: every list / map / record reachable from v (through items and closures) carries `labels`."""
+    if not labels:
+        return
+    seen = set() if _seen is None else _seen
+    stack = [v]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, LFn):
+            x = x.fn
+        if isinstance(x, Closure):
+            if id(x) in seen:
+                continue
+            seen.add(id(x))
+            e = x.env
+            while e is not None and hasattr(e, "vars"):
+                if id(e) not in seen:
+                    seen.add(id(e))
+                    stack.extend(e.vars.values())
+                e = getattr(e, "parent", None)
+            continue
+        if not isinstance(x, (list, dict, Record, EnumVal)) or id(x) in seen:
+            continue
+        seen.add(id(x))
+        if not isinstance(x, EnumVal):
+            heap_add(x, labels)
+        stack.extend(_items(x))
 
 
 # L (round 6): labels_of is memoized, so a check on every level of a deep value is linear, not quadratic.
@@ -228,7 +401,7 @@ def _items(v: Any) -> Iterable:
 
 def labels_of(v: Any, _seen: set | None = None) -> frozenset:
     """Union of all labels inside v (deep), container labels included."""
-    if isinstance(v, (LStr, LInt, LFloat, RangeVal, LFn)):
+    if isinstance(v, (LStr, LInt, LFloat, RangeVal, LFn, LBool, LNone)):
         return v.labels
     if not isinstance(v, (list, dict, Record, EnumVal)):
         return EMPTY
@@ -254,7 +427,7 @@ def _labels_memo(v: Any, memo: dict, path: set) -> frozenset:
     path.add(id(v))
     out: set = set(own_labels(v))
     for x in _items(v):
-        if isinstance(x, (LStr, LInt, LFloat, RangeVal, LFn)):
+        if isinstance(x, (LStr, LInt, LFloat, RangeVal, LFn, LBool, LNone)):
             out |= x.labels
         elif isinstance(x, (list, dict, Record, EnumVal)):
             out |= _labels_memo(x, memo, path)
@@ -327,9 +500,11 @@ def select(v: Any, labels: frozenset) -> Any:
     Leaves get the labels; Bool, none and payload-free enum values stay unlabelled (choice declassification);
     a record becomes a view sharing the original's fields; a list or map becomes a read-only copy with
     labels of its own (its items are labelled when pulled out); an enum payload is labelled the same way; a
-    function value labels what it returns."""
-    if not labels or v is None or v is True or v is False:
+    function value labels what it returns. In strict mode Bool, none and enum values are labelled too."""
+    if not labels:
         return v
+    if v is None or is_bool(v) or type(v) is LNone:
+        return taint(v, labels) if FLOW.on else v
     if isinstance(v, (str, int, float)):
         return with_labels(v, labels)
     if isinstance(v, RangeVal):
@@ -341,9 +516,10 @@ def select(v: Any, labels: frozenset) -> Any:
     if isinstance(v, dict):
         return LDict(v, own_labels(v) | labels, frozen=True)
     if isinstance(v, EnumVal):
+        own = v.labels | labels if FLOW.on else v.labels
         if not v.fields:
-            return v
-        return EnumVal(v.enum, v.variant, {k: select(x, labels) for k, x in v.fields.items()}, v.wrapped)
+            return v if own == v.labels else EnumVal(v.enum, v.variant, v.fields, v.wrapped, own)
+        return EnumVal(v.enum, v.variant, {k: select(x, labels) for k, x in v.fields.items()}, v.wrapped, own)
     if isinstance(v, LFn):
         return LFn(v.fn, v.labels | labels)
     return LFn(v, labels)
@@ -353,9 +529,11 @@ def label_written(v: Any, labels: frozenset) -> Any:
     """A value stored at a position chosen with labelled data (`xs[i] = v`, `m[k] = v`, `rec.f = v` through a
     labelled pick, push into a labelled pick): leaves and records carry the labels; a list, map or enum with a
     payload is stored as a copy whose leaves carry them; Bool, none and plain enum values are stored as they are
-    (structure is not labelled, SPEC §6)."""
-    if not labels or v is None or v is True or v is False:
+    (structure is not labelled, SPEC §6), except in strict mode."""
+    if not labels:
         return v
+    if v is None or is_bool(v) or type(v) is LNone:
+        return taint(v, labels) if FLOW.on else v
     if isinstance(v, (str, int, float)):
         return with_labels(v, labels)
     if isinstance(v, Record):
@@ -398,12 +576,15 @@ def deep_label(v: Any, labels: frozenset, _seen: dict | None = None) -> Any:
         r.fields = {k: deep_label(x, labels, _seen) for k, x in v.fields.items()}
         return r
     if isinstance(v, EnumVal):
+        own = v.labels | labels if FLOW.on else v.labels
         if not v.fields:
-            return v
-        e = EnumVal(v.enum, v.variant, {}, v.wrapped)
+            return v if own == v.labels else EnumVal(v.enum, v.variant, v.fields, v.wrapped, own)
+        e = EnumVal(v.enum, v.variant, {}, v.wrapped, own)
         _seen[id(v)] = e
         e.fields = {k: deep_label(x, labels, _seen) for k, x in v.fields.items()}
         return e
+    if FLOW.on and (v is None or is_bool(v) or type(v) is LNone):
+        return taint(v, labels)
     return with_labels(v, labels)
 
 
@@ -445,7 +626,7 @@ def mark_secrets(v: Any, _seen: dict | None = None) -> Any:
         r.fields = {k: mark_secrets(x, _seen) for k, x in v.fields.items()}
         return r
     if isinstance(v, EnumVal) and v.fields:
-        e = EnumVal(v.enum, v.variant, {}, v.wrapped)
+        e = EnumVal(v.enum, v.variant, {}, v.wrapped, v.labels)
         _seen[id(v)] = e
         e.fields = {k: mark_secrets(x, _seen) for k, x in v.fields.items()}
         return e
@@ -476,12 +657,19 @@ def deep_strip(v: Any, keep, _seen: dict | None = None) -> Any:
         r.fields = {k: deep_strip(x, keep, _seen) for k, x in v.fields.items()}
         return r
     if isinstance(v, EnumVal):
+        own = frozenset(l for l in v.labels if keep(l))
         if not v.fields:
-            return v
-        e = EnumVal(v.enum, v.variant, {}, v.wrapped)
+            return v if own == v.labels else EnumVal(v.enum, v.variant, v.fields, v.wrapped, own)
+        e = EnumVal(v.enum, v.variant, {}, v.wrapped, own)
         _seen[id(v)] = e
         e.fields = {k: deep_strip(x, keep, _seen) for k, x in v.fields.items()}
         return e
+    if isinstance(v, LBool):
+        own = frozenset(l for l in v.labels if keep(l))
+        return LBool(v.v, own) if own else v.v
+    if isinstance(v, LNone):
+        own = frozenset(l for l in v.labels if keep(l))
+        return LNone(own) if own else None
     if isinstance(v, (LStr, LInt, LFloat)):
         return set_labels(v, frozenset(l for l in v.labels if keep(l)))
     if isinstance(v, RangeVal):
@@ -493,11 +681,19 @@ def deep_strip(v: Any, keep, _seen: dict | None = None) -> Any:
 
 
 def secrets_in(v: Any) -> list[str]:
-    return sorted(l for l in labels_of(v) if l.startswith("secret:"))
+    """Secret labels of v; in strict mode with those of `pc` (an effect inside a branch decided by a secret)."""
+    ls = labels_of(v) | FLOW.pc if FLOW.on else labels_of(v)
+    return sorted(l for l in ls if l.startswith("secret:"))
 
 
 def untrusted_in(v: Any) -> list[str]:
-    return sorted(l for l in labels_of(v) if l.startswith("untrusted:"))
+    ls = labels_of(v) | FLOW.pc if FLOW.on else labels_of(v)
+    return sorted(l for l in ls if l.startswith("untrusted:"))
+
+
+def secrets_of(v: Any) -> list[str]:
+    """Secret labels of v itself (pc not added)."""
+    return sorted(l for l in labels_of(v) if l.startswith("secret:"))
 
 
 # ------------------------------------------------------------------ equality
@@ -545,8 +741,9 @@ def equal(a: Any, b: Any) -> bool:
     both sides is equal at once unless it holds a NaN (a shared value is not walked twice). An explicit stack,
     not recursion: Python 3.12 stops C recursion (== of nested lists, maps and records) at about 10,000 levels,
     whatever the stack (round 5, D3)."""
-    if (a is True or a is False) != (b is True or b is False):
+    if is_bool(a) != is_bool(b):
         return False
+    a, b = plain(a), plain(b)
     todo: list = [(a, b, 1)]
     memo: dict = {}
     while todo:
@@ -576,7 +773,7 @@ def equal(a: Any, b: Any) -> bool:
                 if k not in y:
                     return False
                 pairs.append((xv, y[k]))
-        elif not x == y:
+        elif not plain(x) == plain(y):
             return False
         if pairs is not None:
             if depth >= MAX_COMPARE_DEPTH:
@@ -594,8 +791,8 @@ VALUE_TOO_LARGE = f"value too large (its JSON text would pass {MAX_STR:,} charac
 def _secret_mark(v: Any) -> str | None:
     """«secret:NAME» for a value whose own labels (a leaf's labels, or a picked container's / range's /
     function's own labels, SPEC §6) hold a secret; None otherwise. Items are not looked at."""
-    if isinstance(v, (LStr, LInt, LFloat, RangeVal, LList, LDict, LRecord, LFn)):
-        sec = sorted(l for l in v.labels if l.startswith("secret:"))
+    if isinstance(v, (LStr, LInt, LFloat, RangeVal, LList, LDict, LRecord, LFn, LBool, LNone, EnumVal)) or FLOW.heap:
+        sec = sorted(l for l in top_labels(v) if l.startswith("secret:"))
         if sec:
             return "«" + ",".join(sec) + "»"
     return None
@@ -623,7 +820,7 @@ def _json_leaf_size(v: Any, redact: bool) -> int | None:
         mark = _secret_mark(v)
         if mark is not None:
             return len(mark) + 2
-    if v is None or v is True or v is False or isinstance(v, (int, float)):
+    if v is None or v is True or v is False or isinstance(v, (int, float, LBool, LNone)):
         return 1
     if isinstance(v, str):
         return len(v) + 2
@@ -690,6 +887,8 @@ def to_json(v: Any, redact: bool = False, _seen: set | None = None) -> Any:
             return mark
     if v is None or v is True or v is False:
         return v
+    if type(v) is LBool or type(v) is LNone:
+        return plain(v)
     if isinstance(v, str):
         return str.__str__(v)
     if isinstance(v, int):
@@ -875,6 +1074,7 @@ def render(v: Any, redact: bool = False) -> str:
             return mark
     if isinstance(v, str):
         return str.__str__(v)
+    v = plain(v)
     if v is None:
         return "none"
     if v is True:

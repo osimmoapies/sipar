@@ -33,8 +33,9 @@ from ..fileread import SYMLINK, FileRefused, open_regular, program_dir, read_tex
 from . import jsondeep
 from .decode import MAX_VALUE_DEPTH, TOO_DEEP, from_json, too_deep, type_str
 from .effects import check_sinks
-from .values import (EMPTY, EnumVal, LDict, LFloat, LInt, LList, LRecord, LStr, RangeVal, Record, deep_label,
-                     holds_lone_surrogate, labels_of, mark_secrets, mutated, own_labels, set_labels)
+from .values import (EMPTY, FLOW, EnumVal, LDict, LFloat, LInt, LList, LRecord, LStr, RangeVal, Record, deep_label,
+                     holds_lone_surrogate, is_bool, is_none, labels_of, mark_secrets, mutated, own_labels, plain,
+                     set_labels, taint, top_labels)
 
 try:
     import fcntl
@@ -49,16 +50,18 @@ MAX_FILE = 1024 * 1024 * 1024   # store file and log: a bigger one is never read
 
 # ------------------------------------------------------------------ value <-> (json, label paths)
 
-def encode(v: Any) -> tuple[Any, list]:
-    """Sipar value -> (plain JSON, [[path, sorted labels], ...]). Raises `value` on cycles and functions."""
+def encode(v: Any, extra: frozenset = EMPTY) -> tuple[Any, list]:
+    """Sipar value -> (plain JSON, [[path, sorted labels], ...]). Raises `value` on cycles and functions.
+    `extra` (strict mode: the pc of a save inside a branch) is added to every leaf and container."""
     paths: list = []
     stack: set[int] = set()
 
     path: list = []         # one shared trail (copied only for a labelled leaf): linear for deep values
 
     def leaf(x: Any, path: list) -> None:
-        if isinstance(x, (LStr, LInt, LFloat)) and x.labels:
-            paths.append([list(path), sorted(x.labels)])
+        ls = (x.labels if isinstance(x, (LStr, LInt, LFloat)) else top_labels(x)) | extra
+        if ls:
+            paths.append([list(path), sorted(ls)])
 
     def sub(y: Any, seg: Any) -> Any:
         if len(path) >= MAX_VALUE_DEPTH:
@@ -70,8 +73,9 @@ def encode(v: Any) -> tuple[Any, list]:
             path.pop()
 
     def walk(x: Any) -> Any:
-        if x is None or x is True or x is False:
-            return x
+        if is_none(x) or is_bool(x):        # strict mode: a labelled Bool / none keeps its labels
+            leaf(x, path)
+            return plain(x)
         if isinstance(x, str):
             leaf(x, path)
             return str.__str__(x)
@@ -84,17 +88,21 @@ def encode(v: Any) -> tuple[Any, list]:
             leaf(x, path)
             return float(x)
         if isinstance(x, RangeVal):
-            if x.labels:
+            if x.labels | extra:
                 for i in range(x.end - x.start):
-                    paths.append([path + [i], sorted(x.labels)])
+                    paths.append([path + [i], sorted(x.labels | extra)])
             return list(range(x.start, x.end))
         if isinstance(x, (list, dict, Record, EnumVal)):
             if id(x) in stack:
                 raise SiparRuntimeError("value", "memory.save: the value contains itself (a cycle); it cannot be "
                                                  "stored as JSON")
             stack.add(id(x))
-            if own_labels(x):       # a container picked with a labelled index/key (SPEC §6): keep its labels
-                paths.append([path + [{"own": True}], sorted(own_labels(x))])
+            own = own_labels(x) | extra
+            if own and not (isinstance(x, EnumVal) and not x.fields):
+                # a container picked with a labelled index/key (SPEC §6), or (strict) written under a pc
+                paths.append([path + [{"own": True}], sorted(own)])
+            elif own:                       # a payload-free enum is stored as its name: a leaf
+                paths.append([list(path), sorted(own)])
             try:
                 if isinstance(x, list):
                     return [sub(y, i) for i, y in enumerate(x)]
@@ -185,6 +193,8 @@ def _relabel(v: Any, path: list, labels: frozenset, key: str, t, whole: list | N
     if not path:
         if isinstance(v, (str, int, float)) and not isinstance(v, bool):
             return set_labels(v, labels_of(v) | labels)
+        if FLOW.on and (is_none(v) or is_bool(v) or isinstance(v, EnumVal)):    # strict mode keeps them
+            return taint(v, labels)
         raise bad()
     step, rest = path[0], path[1:]
     if step == {"own": True}:           # the container's own labels (SPEC §6 selection)
@@ -196,6 +206,8 @@ def _relabel(v: Any, path: list, labels: frozenset, key: str, t, whole: list | N
             return LDict(v, own_labels(v) | labels)
         if isinstance(v, Record):
             return LRecord(v.type_name, v.fields, own_labels(v) | labels)
+        if FLOW.on and isinstance(v, EnumVal):
+            return taint(v, labels)
         raise bad()
     if isinstance(step, dict):
         if rest or not isinstance(v, dict) or step["key"] not in v:
@@ -660,7 +672,7 @@ def _key(fname: str, key: Any) -> str:
 def save(rt, key: Any, value: Any) -> None:
     check_sinks("memory.save", {"key": key, "value": value})
     k = _key("memory.save", key)
-    data, paths = encode(value)
+    data, paths = encode(value, FLOW.pc if FLOW.on else EMPTY)     # strict: saved under a pc, loads with it
     entry = {"value": data, "labels": paths, "enc": ENC}
     rt.journal.effect("memory.save", {"key": k, "value": data, "labels": paths, "enc": ENC},
                       lambda: store_for(rt).put(k, entry))
@@ -676,11 +688,13 @@ def load(rt, key: Any, t) -> Any:
     try:
         entry = rt.journal.effect("memory.load", {"key": k, "type": type_str(t)}, lambda: store_for(rt).get(k))
         if entry is None:
-            return None
+            return taint(None, labels_of(key)) if FLOW.on else None
         v = mark_secrets(decode(entry, t, rt.tenv, k))      # text stored before the secret was known (SPEC §6)
     except RecursionError:      # journal scrub / labelling of a stored value Python cannot walk (SPEC §5)
         raise SiparRuntimeError("io", f"memory.load({k!r}): the stored value is nested too deeply") from None
     kl = labels_of(key)
+    if FLOW.on and kl:
+        return taint(deep_label(v, kl), kl)
     return deep_label(v, kl) if kl else v
 
 

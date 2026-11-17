@@ -42,7 +42,7 @@ from .builtins import FUNCS
 from .decode import MAX_VALUE_DEPTH, TOO_DEEP, from_json, json_loads, too_deep, type_str
 from .effects import _deadline, _too_slow, cap_error, shell_env
 from . import children, jsondeep, netio
-from .values import mark_secrets, scrub_text, secrets_in, to_json, untrusted_in, with_labels
+from .values import is_none, mark_secrets, scrub_text, secrets_in, to_json, untrusted_in, with_labels
 
 NEW = "2026-07-28"
 OLD = "2025-11-25"
@@ -936,7 +936,7 @@ class AgentTool:
     def call(self, rt, args: dict) -> Any:
         """run_agent decodes every parameter; an optional one the model left out arrives as none and is not sent."""
         opt = {p.name for p in self.params if isinstance(p.type, A.TOptional)}
-        return call_tool(rt, self.srv, self.tool, {k: v for k, v in args.items() if not (k in opt and v is None)})
+        return call_tool(rt, self.srv, self.tool, {k: v for k, v in args.items() if not (k in opt and is_none(v))})
 
 
 def schema_params(schema) -> list:

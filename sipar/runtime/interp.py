@@ -1,6 +1,8 @@
 """Tree-walking interpreter for Sipar programs."""
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import hashlib
 import math
 import os
@@ -24,9 +26,11 @@ from .journal import Journal
 from .netio import env_seconds
 from .providers import (MockProvider, check_script_names, clean_usage, estimate_tokens, make_provider, parse_chain,
                         parse_model, prompt_text, valid_count)
-from .values import (EMPTY, Builtin, Closure, EnumVal, FnRef, LFn, LStr, RangeVal, Record, check_mutable,
-                     deep_label, dumps, check_int, INT_TOO_LARGE, MAX_STR, STR_TOO_LARGE, equal, is_num, kind_of, label_written, labels_of, make_error,
-                     mutated, new_list, own_labels, render, scrub_text, secrets_in, select, snippet, with_labels, WidenFn, widen)
+from .values import (EMPTY, FLOW, Builtin, Closure, EnumVal, FnRef, LBool, LFn, LNone, LStr, RangeVal, Record,
+                     check_mutable, deep_label, deep_upgrade, dumps, check_int, INT_TOO_LARGE, MAX_STR, STR_TOO_LARGE,
+                     equal, heap_add, is_bool, is_none, is_num, kind_of, label_written, labels_of, make_error, mutated,
+                     new_list, own_labels, plain, render, scrub_text, secrets_in, select, snippet, taint, top_labels,
+                     with_labels, WidenFn, widen)
 
 INT_TEXT = re.compile(r"[+-]?[0-9]+(?:_[0-9]+)*")   # what int() accepts after strip(), ASCII only
 # Str -> Float text: a sign, then a number as in a literal ('_' only between digits, never in the exponent);
@@ -34,6 +38,47 @@ INT_TEXT = re.compile(r"[+-]?[0-9]+(?:_[0-9]+)*")   # what int() accepts after s
 FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:_[0-9]+)*(?:\.(?:[0-9]+(?:_[0-9]+)*)?)?|\.[0-9]+(?:_[0-9]+)*)"
                         r"(?:[eE][+-]?[0-9]+)?")
 MUTATORS = frozenset({"push", "pop", "remove"})     # methods that change their receiver in place
+CALLBACK_METHODS = frozenset({"map", "filter", "reduce", "any", "all", "sort_by"})   # call a function per item
+CMP_OPS = frozenset({"==", "!=", "in", "<", "<=", ">", ">="})
+NO_FLOW_KINDS = frozenset({"taint", "replay", "type", "capability"})   # failures not decided by data or the world
+BUILTIN_METHOD_NAMES = frozenset(m for ms in METHODS.values() for m in ms)
+_MISSING = object()
+
+
+class _Scan:
+    """What a piece of code may change (strict mode, SPEC §6.2): names it assigns, names whose containers it
+    mutates or hands to a function, names it reads, and whether it may `return` / `break` out of the code
+    around it."""
+    __slots__ = ("assigned", "muts", "names", "has_return", "has_break")
+
+    def __init__(self):
+        self.assigned: set = set()
+        self.muts: set = set()
+        self.names: set = set()
+        self.has_return = False
+        self.has_break = False
+
+
+def _names(node: Any) -> set:
+    """Every name read inside an expression."""
+    out: set = set()
+    stack = [node]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, (list, tuple)):
+            stack.extend(x)
+        elif isinstance(x, A.Node):
+            if type(x) is A.Name:
+                out.add(x.name)
+            stack.extend(getattr(x, f.name) for f in dataclasses.fields(x))
+    return out
+
+
+def _roots(node: Any) -> set:
+    """The variable a place expression (`a.b[i].c`) starts from; any other expression: every name in it."""
+    while isinstance(node, (A.Field, A.Index)):
+        node = node.obj
+    return {node.name} if isinstance(node, A.Name) else _names(node)
 MAX_PRICE = 1e9          # USD per 1M tokens; above it (or NaN / inf) the price is not believed
 
 
@@ -87,12 +132,13 @@ def err(kind: str, msg: str, node: A.Node | None = None) -> SiparRuntimeError:
 
 
 class Env:
-    __slots__ = ("vars", "frozen", "parent")
+    __slots__ = ("vars", "frozen", "parent", "dpc")
 
     def __init__(self, parent: "Env | None" = None):
         self.vars: dict[str, Any] = {}
         self.frozen: set[str] = set()
         self.parent = parent
+        self.dpc: dict | None = None      # strict mode: name -> the pc it was declared under
 
     def find(self, name: str) -> "Env | None":
         e = self
@@ -104,6 +150,12 @@ class Env:
 
     def define(self, name: str, value: Any, mutable: bool = False) -> None:
         self.vars[name] = value
+        if FLOW.on and FLOW.pc:             # declared inside a region: it exists only on this path (SPEC §6.2)
+            if self.dpc is None:
+                self.dpc = {}
+            self.dpc[name] = FLOW.pc
+        elif self.dpc:
+            self.dpc.pop(name, None)
         if mutable:
             self.frozen.discard(name)
         else:
@@ -168,6 +220,16 @@ class Interp:
         self.caps = Caps(allows, base)
         self.globals = Env()
         self._globals_ready = False
+        # strict mode (SPEC §6.2): implicit flows are tracked as well
+        self.strict = any(isinstance(it, A.Strict) for it in program.items) or \
+            os.environ.get("SIPAR_STRICT", "").strip().lower() in ("1", "true", "yes")
+        self.fpc = self.lpc = self.tpc = EMPTY     # labels that decided an early return / break / a caught error
+        self.fn_ctx: Any = None                    # body of the function now running
+        self.loop_ctx: Any = None                  # (body, env) of the innermost loop
+        self.try_ctx: Any = None                   # (try node, env) of the innermost try
+        self._scans: dict = {}
+        self._mgs: dict = {}
+        self._cb_vals: tuple = ()
         self.EVAL = {
             A.IntLit: lambda n, env: n.value, A.FloatLit: lambda n, env: n.value,
             A.BoolLit: lambda n, env: n.value, A.NoneLit: lambda n, env: None,
@@ -177,6 +239,247 @@ class Interp:
             A.Block: self.e_block, A.If: self.e_if, A.Match: self.e_match, A.Try: self.e_try,
             A.Budget: self.e_budget,
         }
+
+    # ================================================================ strict mode (SPEC §6.2)
+    @contextlib.contextmanager
+    def flow(self):
+        """Run a program (main, a test, a host call) with this interpreter's flow mode on the current thread."""
+        saved = (FLOW.on, FLOW.pc, FLOW.heap, self.fpc, self.lpc, self.tpc, self.fn_ctx, self.loop_ctx,
+                 self.try_ctx)
+        FLOW.on, FLOW.pc = self.strict, EMPTY
+        FLOW.heap = {} if self.strict else None
+        self.fpc = self.lpc = self.tpc = EMPTY
+        self.fn_ctx = self.loop_ctx = self.try_ctx = None
+        mutated()
+        try:
+            yield
+        finally:
+            (FLOW.on, FLOW.pc, FLOW.heap, self.fpc, self.lpc, self.tpc, self.fn_ctx, self.loop_ctx,
+             self.try_ctx) = saved
+            mutated()
+
+    def _scan(self, node: Any) -> _Scan:
+        hit = self._scans.get(id(node))
+        if hit is not None and hit[0] is node:
+            return hit[1]
+        info = _Scan()
+        stack: list = [(node, False, False)]       # (node, inside a lambda or mock, inside a nested loop)
+        while stack:
+            x, lam, loop = stack.pop()
+            if isinstance(x, (list, tuple)):
+                stack.extend((y, lam, loop) for y in x)
+                continue
+            if not isinstance(x, A.Node):
+                continue
+            t = type(x)
+            if t is A.Name:
+                info.names.add(x.name)
+            elif t is A.Assign:
+                if isinstance(x.target, A.Name):
+                    info.assigned.add(x.target.name)
+                else:
+                    info.muts |= _roots(x.target)
+            elif t is A.Call:
+                c = x.callee
+                if isinstance(c, A.Field):
+                    if c.name in MUTATORS:
+                        info.muts |= _roots(c.obj)
+                    elif c.name in CALLBACK_METHODS:
+                        for a in x.args:            # a callback that changes its argument changes the items
+                            v = a.value
+                            if isinstance(v, A.Lambda):
+                                sub = self._scan(v.body)
+                                if (sub.muts | sub.assigned) & {p.name for p in v.params}:
+                                    info.muts |= _roots(c.obj)
+                            elif not isinstance(v, A.Lambda):
+                                info.muts |= _roots(c.obj)
+                    builtin = c.name in BUILTIN_METHOD_NAMES or (isinstance(c.obj, A.Name) and (
+                        c.obj.name in MODULES or c.obj.name in self.tenv.enums))
+                else:
+                    builtin = isinstance(c, A.Name) and c.name in FUNCS and c.name not in self.fns
+                if not builtin:                     # a function may change the containers it is given
+                    for a in x.args:
+                        info.muts |= _names(a.value)
+            elif t is A.Return:
+                if not lam:
+                    info.has_return = True
+            elif t is A.Break or t is A.Continue:
+                if not lam and not loop:
+                    info.has_break = True
+            nlam = lam or t is A.Lambda or t is A.Mock
+            nloop = loop or t is A.While or t is A.For
+            stack.extend((getattr(x, f.name), nlam, nloop) for f in dataclasses.fields(x))
+        self._scans[id(node)] = (node, info)
+        return info
+
+    def _mg(self, decl: A.FnDecl) -> set:
+        """Names of global values a call of decl may change (through every function it may call)."""
+        hit = self._mgs.get(id(decl))
+        if hit is not None and hit[0] is decl:
+            return hit[1]
+        gnames = {c.name for c in self.consts}
+        out: set = set()
+        seen: set = set()
+        todo = [decl]
+        while todo:
+            d = todo.pop()
+            if id(d) in seen:
+                continue
+            seen.add(id(d))
+            info = self._scan(d)
+            out |= info.muts & gnames
+            todo.extend(self.fns[nm] for nm in info.names if nm in self.fns)
+        self._mgs[id(decl)] = (decl, out)
+        return out
+
+    def _lookup(self, name: str, env: Any) -> Any:
+        e = env.find(name) if env is not None else None
+        if e is not None:
+            return e.vars[name]
+        if name in self.fns:
+            return FnRef(self.fns[name])
+        g = self.globals.find(name)
+        return g.vars[name] if g is not None else _MISSING
+
+    def _pre_upgrade(self, node: Any, env: Any, new: frozenset, callback: bool = False,
+                     seen: set | None = None) -> None:
+        """Before code decided by `new` runs: every variable it may assign and every container it may change
+        carries `new` already, on this path and on the paths not taken (SPEC §6.2). What this misses is caught
+        by the no-sensitive-upgrade check at the write itself."""
+        seen = set() if seen is None else seen
+        key = (id(node), id(env))
+        if key in seen:
+            return
+        seen.add(key)
+        info = self._scan(node)
+        for name in info.assigned:
+            e = env.find(name) if env is not None else None
+            if e is not None and name not in e.frozen:
+                e.vars[name] = taint(e.vars[name], new)
+        for name in info.muts:
+            v = self._lookup(name, env)
+            if isinstance(v, (list, dict, Record, EnumVal)):
+                deep_upgrade(v, new)
+        for name in info.names:
+            v = self._lookup(name, env)
+            while isinstance(v, (LFn, WidenFn)):
+                v = v.fn
+            if isinstance(v, Closure):
+                self._pre_upgrade(v.body, v.env, new, True, seen)
+            elif isinstance(v, FnRef):
+                for g in self._mg(v.decl):
+                    gv = self._lookup(g, None)
+                    if gv is not _MISSING:
+                        deep_upgrade(gv, new)
+        if callback:
+            return
+        if info.has_return and self.fn_ctx is not None:
+            self.fpc = self.fpc | new
+            self._pre_upgrade(self.fn_ctx, env, new, True, seen)
+        if info.has_break and self.loop_ctx is not None:
+            self.lpc = self.lpc | new
+            self._pre_upgrade(self.loop_ctx[0], env, new, True, seen)
+        self._try_mark(new, seen, env)
+
+    def _try_mark(self, new: frozenset, seen: set | None = None, env: Any = None) -> None:
+        """Code decided by `new` runs inside a try: whether the rest of the try body or the handler runs may
+        depend on it (an error raised there)."""
+        if self.try_ctx is not None and not new <= self.tpc:
+            self.tpc = self.tpc | new
+            self._pre_upgrade(self.try_ctx[0], self.try_ctx[1], new, True, seen)
+            if env is not None and env is not self.try_ctx[1]:
+                self._pre_upgrade(self.try_ctx[0], env, new, True, seen)
+
+    def _enter(self, P: frozenset, node: Any, env: Any) -> frozenset | None:
+        """Start a region decided by labels P; returns the pc to restore (None: nothing changed)."""
+        pc = FLOW.pc
+        if not P or P <= pc:
+            return None
+        new = pc | P
+        self._pre_upgrade(node, env, new)
+        FLOW.pc = new
+        return pc
+
+    def _leave(self, old: frozenset | None) -> None:
+        if old is not None:
+            FLOW.pc = old | self.fpc | self.lpc | self.tpc
+
+    @staticmethod
+    def _flow_err(e: SiparRuntimeError) -> None:
+        """An error raised in code decided by pc: whether it happened depends on pc."""
+        if FLOW.pc:
+            e.flow = getattr(e, "flow", EMPTY) | FLOW.pc
+
+    def _frame(self, ctx: Any) -> tuple:
+        s = (FLOW.pc, self.fpc, self.lpc, self.fn_ctx, self.loop_ctx)
+        self.fpc = self.lpc = EMPTY
+        self.fn_ctx, self.loop_ctx = ctx, None
+        return s
+
+    def _unframe(self, s: tuple) -> None:
+        pc, self.fpc, self.lpc, self.fn_ctx, self.loop_ctx = s
+        FLOW.pc = pc | self.tpc
+
+    def _nsu(self, what: str, node: A.Node | None = None) -> SiparRuntimeError:
+        e = err("taint", f"strict mode: cannot change {what} inside code decided by "
+                         f"«{', '.join(sorted(FLOW.pc))}»: whether it changes would reveal that data "
+                         "(declare it inside that code, or give it a value before; SPEC §6.2)", node)
+        e.fatal = True
+        return e
+
+    def _fresh(self, r: Any, vals: Any) -> None:
+        """A new list / map / record made by a built-in under pc carries pc (it exists only on this path)."""
+        if not FLOW.pc or not isinstance(r, (list, dict, Record)):
+            return
+        for v in vals:
+            if v is r:
+                return
+            items = v.values() if isinstance(v, dict) else v.fields.values() if isinstance(v, Record) else \
+                v if isinstance(v, list) else ()
+            if any(x is r for x in items):
+                return
+        heap_add(r, FLOW.pc)
+
+    def raise_pc(self, P: frozenset, f: Any) -> None:
+        """Built-ins: the calls of f still to come depend on labels P (any/all stopping early)."""
+        if not FLOW.on or not P or P <= FLOW.pc:
+            return
+        new = FLOW.pc | P
+        self._pre_upgrade_callable(f, new)
+        self._try_mark(new)
+        FLOW.pc = new
+
+    def _pre_upgrade_callable(self, f: Any, new: frozenset) -> None:
+        while isinstance(f, (LFn, WidenFn)):
+            f = f.fn
+        if isinstance(f, Closure):
+            self._pre_upgrade(f.body, f.env, new, True)
+            info, params = self._scan(f.body), {p.name for p in f.params}
+        elif isinstance(f, FnRef):
+            for g in self._mg(f.decl):
+                gv = self._lookup(g, None)
+                if gv is not _MISSING:
+                    deep_upgrade(gv, new)
+            info, params = self._scan(f.decl), {p.name for p in f.decl.params}
+        else:
+            return
+        if (info.muts | info.assigned) & params:      # it may change the items it is given
+            for v in self._cb_vals:
+                if isinstance(v, (list, dict, Record, EnumVal, RangeVal)):
+                    deep_upgrade(v, new)
+
+    def _pat_labels(self, p: A.Node, v: Any, env: Env) -> frozenset:
+        """Labels deciding whether pattern p matches v."""
+        if isinstance(p, A.PLit):
+            return labels_of(v) | labels_of(self.eval(p.value, env))
+        if isinstance(p, A.PVariant):
+            ls = top_labels(v)
+            if p.args and isinstance(v, EnumVal) and v.enum == p.enum and v.variant == p.variant \
+                    and len(p.args) == len(v.fields):
+                for sp, x in zip(p.args, v.fields.values()):
+                    ls = ls | self._pat_labels(sp, x, env)
+            return ls
+        return EMPTY
 
     # ================================================================ entry points
     def init_globals(self) -> None:
@@ -193,6 +496,10 @@ class Interp:
             return call_deep(self._run_main, argv)
 
     def _run_main(self, argv: list[str] | None) -> Any:
+        with self.flow():
+            return self._run_main_body(argv)
+
+    def _run_main_body(self, argv: list[str] | None) -> Any:
         self.init_globals()
         main = self.fns.get("main")
         if main is None or main.kind != "fn":
@@ -302,10 +609,13 @@ class Interp:
                 self.assign(s.target, self.eval(s.value, env), env)
                 return None
             if t is A.While:
+                if FLOW.on:
+                    self.exec_while_strict(s, env)
+                    return None
                 while True:
                     self.tick()
                     c = self.eval(s.cond, env)
-                    if c is not True and c is not False:
+                    if not is_bool(c):
                         raise err("type", f"while condition must be Bool, got {kind_of(c)}", s.cond)
                     if not c:
                         break
@@ -327,13 +637,15 @@ class Interp:
                 raise ContinueSig()
             if t is A.Assert:
                 c = self.eval(s.cond, env)
-                if c is not True:
+                if plain(c) is not True:
                     msg, labels = "assertion failed", EMPTY
                     if s.message is not None:
                         mv = self.eval(s.message, env)
                         msg, labels = render(mv, redact=True), labels_of(mv)
                     e = err("assert", msg, s)
                     e.value = with_labels(msg, labels)      # own words: keep only the message's labels
+                    if FLOW.on and top_labels(c):           # whether it failed depends on the condition
+                        e.flow = top_labels(c)
                     raise e
                 return None
             if t is A.Mock:
@@ -345,10 +657,60 @@ class Interp:
                 return None
             raise err("type", f"unknown statement {t.__name__}", s)
         except SiparRuntimeError as e:
+            if FLOW.on:
+                self._flow_err(e)
             raise self.located(e, s)
+
+    def exec_while_strict(self, s: A.While, env: Env) -> None:
+        saved = (self.lpc, self.loop_ctx)
+        self.lpc, self.loop_ctx = EMPTY, (s.body, env)
+        pc0 = FLOW.pc
+        try:
+            while True:
+                self.tick()
+                c = self.eval(s.cond, env)
+                if not is_bool(c):
+                    raise err("type", f"while condition must be Bool, got {kind_of(c)}", s.cond)
+                if not top_labels(c) <= FLOW.pc:         # whether the loop goes on depends on c
+                    new = FLOW.pc | top_labels(c)
+                    self._pre_upgrade(s, env, new)
+                    FLOW.pc = new
+                if not c:
+                    break
+                try:
+                    self.exec_block(s.body, env)
+                except BreakSig:
+                    break
+                except ContinueSig:
+                    continue
+        except SiparRuntimeError as e:
+            self._flow_err(e)
+            raise
+        finally:
+            self.lpc, self.loop_ctx = saved
+            FLOW.pc = pc0 | self.fpc | self.lpc | self.tpc
 
     def exec_for(self, s: A.For, env: Env) -> None:
         it = self.eval_range_aware(s.iter, env)
+        if FLOW.on:
+            P = it.labels if isinstance(it, RangeVal) else own_labels(it) if isinstance(it, (list, dict)) else \
+                labels_of(it) if isinstance(it, str) else EMPTY
+            pc0 = FLOW.pc
+            self._enter(P, s, env)
+            saved = (self.lpc, self.loop_ctx)
+            self.lpc, self.loop_ctx = EMPTY, (s.body, env)
+            try:
+                self._exec_for(s, env, it)
+            except SiparRuntimeError as e:
+                self._flow_err(e)
+                raise
+            finally:
+                self.lpc, self.loop_ctx = saved
+                FLOW.pc = pc0 | self.fpc | self.lpc | self.tpc
+            return
+        self._exec_for(s, env, it)
+
+    def _exec_for(self, s: A.For, env: Env, it: Any) -> None:
         if isinstance(it, RangeVal):
             seq: Any = (with_labels(i, it.labels) for i in range(it.start, it.end))
         elif isinstance(it, list):
@@ -381,12 +743,20 @@ class Interp:
                 raise err("type", f"assignment to undeclared variable '{target.name}'", target)
             if target.name in e.frozen:
                 raise err("type", f"cannot assign to '{target.name}': it is declared with 'let' (use 'var')", target)
+            if FLOW.on and FLOW.pc:
+                need = FLOW.pc - (e.dpc.get(target.name, EMPTY) if e.dpc else EMPTY)
+                if need:
+                    if not need <= top_labels(e.vars[target.name]):
+                        raise self._nsu(f"'{target.name}'", target)
+                    value = taint(value, need)
             e.vars[target.name] = value
             return
         if isinstance(target, A.Field):
             obj, ls = self.place(target.obj, env)
             if not isinstance(obj, Record):
                 raise err("type", f"cannot set field '{target.name}' on {kind_of(obj)}", target)
+            if FLOW.on and not FLOW.pc <= own_labels(obj):
+                raise self._nsu(f"a field of this {obj.type_name}", target)
             if target.name not in obj.fields:
                 raise err("type", f"{obj.type_name} has no field '{target.name}'", target)
             ftype = dict(self.tenv.records.get(obj.type_name, [])).get(target.name)
@@ -400,6 +770,8 @@ class Interp:
             idx = self.eval(target.index, env)
             if isinstance(obj, (list, dict)):
                 check_mutable(obj)
+                if FLOW.on and not FLOW.pc <= own_labels(obj):
+                    raise self._nsu(f"this {kind_of(obj)}", target)
                 ls = ls | own_labels(obj) | labels_of(idx)    # a write at a labelled position (SPEC §6)
             if isinstance(obj, list):
                 try:
@@ -464,6 +836,8 @@ class Interp:
             out.append(self.materialize(v) if isinstance(v, RangeVal) else v)
         if len(out) > MAX_ITEMS:
             raise err("value", "list too large", n)
+        if FLOW.pc:
+            heap_add(out, FLOW.pc)
         return out
 
     def e_map(self, n: A.MapLit, env: Env) -> Any:
@@ -475,6 +849,8 @@ class Interp:
             # a labelled key is a labelled position, as in `m[k] = v` (SPEC §6): without this `["safe": "ls", k: "id"]`
             # let a model-chosen key replace the value under a fixed key with an unlabelled one (round 13)
             d[kv] = label_written(self.eval(v, env), labels_of(kv))
+        if FLOW.pc:
+            heap_add(d, FLOW.pc)
         return d
 
     def e_record(self, n: A.RecordLit, env: Env) -> Any:
@@ -494,7 +870,10 @@ class Interp:
                 raise err("type", f"{n.type_name} literal is missing field '{fname}'", n)
         if given:
             raise err("type", f"{n.type_name} has no field(s) {sorted(given)}", n)
-        return Record(n.type_name, out)
+        r = Record(n.type_name, out)
+        if FLOW.pc:
+            heap_add(r, FLOW.pc)
+        return r
 
     def e_lambda(self, n: A.Lambda, env: Env) -> Any:
         return Closure(n.params, n.body, env, "<lambda>", n.ret)
@@ -504,8 +883,19 @@ class Interp:
 
     def e_if(self, n: A.If, env: Env) -> Any:
         c = self.eval(n.cond, env)
-        if c is not True and c is not False:
+        if not is_bool(c):
             raise err("type", f"if condition must be Bool, got {kind_of(c)}", n.cond)
+        if FLOW.on and top_labels(c):
+            P = top_labels(c)
+            old = self._enter(P, n, env)
+            try:
+                r = self.exec_block(n.then, env) if c else None if n.else_ is None else self.eval(n.else_, env)
+            except SiparRuntimeError as e:
+                self._flow_err(e)
+                raise
+            finally:
+                self._leave(old)
+            return taint(r, P)
         if c:
             return self.exec_block(n.then, env)
         if n.else_ is None:
@@ -514,6 +904,8 @@ class Interp:
 
     def e_match(self, n: A.Match, env: Env) -> Any:
         v = self.eval(n.subject, env)
+        if FLOW.on:
+            return self.e_match_strict(n, env, v)
         for arm in n.arms:
             binds: dict = {}
             if self.match_pattern(arm.pattern, v, binds, env):
@@ -522,6 +914,29 @@ class Interp:
                     local.define(k, x)
                 return self.eval(arm.body, local)
         raise tag(err("value", f"no match arm for {snippet(v)}", n), v)
+
+    def e_match_strict(self, n: A.Match, env: Env, v: Any) -> Any:
+        """Which arm runs depends on the labels the tested patterns looked at (SPEC §6.2)."""
+        P, first = EMPTY, None
+        try:
+            for arm in n.arms:
+                P = P | self._pat_labels(arm.pattern, v, env)
+                if not P <= FLOW.pc:
+                    old = self._enter(P, n, env)
+                    if first is None:
+                        first = old
+                binds: dict = {}
+                if self.match_pattern(arm.pattern, v, binds, env):
+                    local = Env(env)
+                    for k, x in binds.items():
+                        local.define(k, taint(x, P))
+                    return taint(self.eval(arm.body, local), P)
+            raise tag(err("value", f"no match arm for {snippet(v)}", n), v)
+        except SiparRuntimeError as e:
+            self._flow_err(e)
+            raise
+        finally:
+            self._leave(first)
 
     def match_pattern(self, p: A.Node, v: Any, binds: dict, env: Env) -> bool:
         if isinstance(p, A.PWild):
@@ -546,6 +961,8 @@ class Interp:
         raise err("type", "invalid pattern", p)
 
     def e_try(self, n: A.Try, env: Env) -> Any:
+        if FLOW.on:
+            return self.e_try_strict(n, env)
         saved_budgets = len(self.budgets)
         saved_depth = self.depth
         try:
@@ -560,6 +977,55 @@ class Interp:
             local = Env(env)
             local.define(n.err_name, self.error_value(e))
             return self.exec_block(n.handler, local)
+
+    def e_try_strict(self, n: A.Try, env: Env) -> Any:
+        """Whether the handler runs depends on what decided the error (SPEC §6.2). An error decided by a
+        secret cannot be caught: the catch would reveal the secret through the path taken."""
+        saved_budgets = len(self.budgets)
+        saved_depth = self.depth
+        pc0 = FLOW.pc
+        outer = (self.tpc, self.try_ctx)
+        self.tpc, self.try_ctx = EMPTY, (n, env)
+        try:
+            try:
+                r = self.exec_block(n.body, env)
+            except SiparRuntimeError as e:
+                if e.kind == "replay" or getattr(e, "fatal", False):
+                    raise
+                if e.kind == "budget":
+                    tag(e, self.budget_labels())
+                del self.budgets[saved_budgets:]
+                self.depth = saved_depth
+                inner = self.tpc
+                self.tpc, self.try_ctx = outer
+                L = (e.labels | getattr(e, "flow", EMPTY) | labels_of(getattr(e, "value", None))
+                     | labels_of(getattr(e, "kind_value", None)) | inner) - pc0
+                sec = sorted(x for x in L if x.startswith("secret:"))
+                if sec:
+                    e.fatal = True
+                    e.message += (f" — strict mode: whether this error happens depends on «{', '.join(sec)}», "
+                                  "so it cannot be caught")
+                    raise
+                if L:
+                    self._pre_upgrade(n, env, pc0 | L)
+                FLOW.pc = pc0 | self.fpc | self.lpc | L | self.tpc
+                local = Env(env)
+                local.define(n.err_name, taint(self.error_value(e), L))
+                try:
+                    return taint(self.exec_block(n.handler, local), L)
+                except SiparRuntimeError as e2:
+                    self._flow_err(e2)
+                    raise
+            inner = self.tpc
+            self.tpc, self.try_ctx = outer
+            if inner:                           # the body ran to the end only because no error came
+                self._pre_upgrade(n, env, pc0 | inner)
+                r = taint(r, inner)
+            return r
+        finally:
+            if self.try_ctx is not None and self.try_ctx[0] is n and self.try_ctx[1] is env:
+                self.tpc, self.try_ctx = outer
+            FLOW.pc = pc0 | self.fpc | self.lpc | self.tpc
 
     @staticmethod
     def error_value(e: SiparRuntimeError) -> Any:
@@ -619,7 +1085,8 @@ class Interp:
             v = obj.fields[n.name]
             return v if raw else select(v, own_labels(obj))
         if isinstance(obj, EnumVal) and n.name in obj.fields:
-            return obj.fields[n.name]
+            v = obj.fields[n.name]
+            return taint(v, obj.labels) if FLOW.on and obj.labels else v
         raise err("type", f"{kind_of(obj)} has no field '{n.name}'", n)
 
     def place(self, node: A.Node, env: Env) -> tuple[Any, frozenset]:
@@ -664,7 +1131,10 @@ class Interp:
     def materialize(self, r: RangeVal) -> list:
         if r.end - r.start > MAX_ITEMS:
             raise tag(SiparRuntimeError("value", f"range {r.start}..{r.end} is too large (max {MAX_ITEMS} items)"), r)
-        return [with_labels(i, r.labels) for i in range(r.start, r.end)]
+        out = [with_labels(i, r.labels) for i in range(r.start, r.end)]
+        if FLOW.pc:
+            heap_add(out, FLOW.pc)
+        return out
 
     def e_index(self, n: A.Index, env: Env) -> Any:
         try:
@@ -699,7 +1169,10 @@ class Interp:
                 b = min(max(idx.end, a), size)
                 if isinstance(obj, str):
                     return with_labels(str.__str__(obj)[a:b], labels_of(obj) | idx.labels)
-                return new_list(obj[a:b], own_labels(obj) | idx.labels)
+                out = new_list(obj[a:b], own_labels(obj) | idx.labels)
+                if FLOW.pc:
+                    heap_add(out, FLOW.pc)
+                return out
             raise err("type", f"cannot slice {kind_of(obj)}", n)
         if isinstance(obj, str):
             i = self.check_index(idx, obj, n)
@@ -718,8 +1191,10 @@ class Interp:
 
     def _unary(self, n: A.Unary, v: Any) -> Any:
         if n.op == "not":
-            if v is not True and v is not False:
+            if not is_bool(v):
                 raise err("type", f"'not' needs Bool, got {kind_of(v)}", n)
+            if type(v) is LBool:
+                return LBool(not v.v, v.labels)
             return not v
         if n.op == "-":
             if not is_num(v):
@@ -731,17 +1206,38 @@ class Interp:
         op = n.op
         if op in ("and", "or"):
             a = self.eval(n.left, env)
-            if a is not True and a is not False:
+            if not is_bool(a):
                 raise err("type", f"'{op}' needs Bool, got {kind_of(a)}", n.left)
-            if (op == "and" and not a) or (op == "or" and a):
-                return a
-            b = self.eval(n.right, env)
-            if b is not True and b is not False:
-                raise err("type", f"'{op}' needs Bool, got {kind_of(b)}", n.right)
-            return b
+            P = top_labels(a) if FLOW.on else EMPTY
+            old = self._enter(P, n.right, env) if P else None   # whether the right side runs depends on a
+            try:
+                if (op == "and" and not a) or (op == "or" and a):
+                    return a
+                b = self.eval(n.right, env)
+                if not is_bool(b):
+                    raise err("type", f"'{op}' needs Bool, got {kind_of(b)}", n.right)
+            except SiparRuntimeError as e:
+                if P:
+                    self._flow_err(e)
+                raise
+            finally:
+                self._leave(old)
+            return taint(b, P)
         if op == "??":
             a = self.eval(n.left, env)
-            return self.eval(n.right, env) if a is None else a
+            P = top_labels(a) if FLOW.on else EMPTY
+            old = self._enter(P, n.right, env) if P else None
+            try:
+                if not is_none(a):
+                    return a
+                b = self.eval(n.right, env)
+            except SiparRuntimeError as e:
+                if P:
+                    self._flow_err(e)
+                raise
+            finally:
+                self._leave(old)
+            return taint(b, P)
         if op == "..":
             r = self.eval_range_aware(n, env)
             try:
@@ -751,9 +1247,14 @@ class Interp:
         a = self.eval(n.left, env)
         b = self.eval(n.right, env)
         try:
-            return self._binop(n, op, a, b)
+            r = self._binop(n, op, a, b)
         except SiparRuntimeError as e:
             raise tag(e, a, b)
+        if FLOW.on and op in CMP_OPS:
+            ls = labels_of(a) | labels_of(b)
+            if ls:
+                return LBool(r, ls)
+        return r
 
     def _binop(self, n: A.Binary, op: str, a: Any, b: Any) -> Any:
         if isinstance(a, RangeVal):
@@ -785,7 +1286,10 @@ class Interp:
             if isinstance(a, list) and isinstance(b, list):
                 if len(a) + len(b) > MAX_ITEMS:
                     raise err("value", f"list too large ({len(a) + len(b)} > {MAX_ITEMS} items)", n)
-                return new_list(a + b, own_labels(a) | own_labels(b))
+                out = new_list(a + b, own_labels(a) | own_labels(b))
+                if FLOW.pc:
+                    heap_add(out, FLOW.pc)
+                return out
         if op in ("+", "-", "*", "/", "%"):
             if not (is_num(a) and is_num(b)):
                 raise err("type", f"cannot apply '{op}' to {kind_of(a)} and {kind_of(b)}", n)
@@ -832,10 +1336,10 @@ class Interp:
 
     def convert(self, v: Any, t: A.TypeExpr) -> Any:
         if isinstance(t, A.TOptional):
-            if v is None:
-                return None
+            if is_none(v):
+                return v
             if isinstance(v, str) and str.__str__(v).strip() in ("null", "none", ""):
-                return None
+                return taint(None, labels_of(v)) if FLOW.on else None
             return self.convert(v, t.inner)
         if isinstance(t, A.TFn):
             raise SiparRuntimeError("type", "cannot convert to a function type")
@@ -844,7 +1348,7 @@ class Interp:
         if name == "Str":
             return with_labels(render(v), ls)
         if name == "Int":
-            if isinstance(v, bool):
+            if is_bool(v):
                 raise SiparRuntimeError("type", "cannot convert Bool to Int")
             if isinstance(v, int):
                 return v
@@ -865,7 +1369,7 @@ class Interp:
                 check_int(r)
                 return with_labels(r, ls)
         if name == "Float":
-            if isinstance(v, bool):
+            if is_bool(v):
                 raise SiparRuntimeError("type", "cannot convert Bool to Float")
             if isinstance(v, (int, float)):
                 try:
@@ -886,12 +1390,12 @@ class Interp:
                     raise SiparRuntimeError("decode", f"cannot parse {snippet(v)} as Float: not a finite number")
                 return with_labels(f, ls)
         if name == "Bool":
-            if v is True or v is False:
+            if is_bool(v):
                 return v
             if isinstance(v, str):
                 s = str.__str__(v).strip().lower()
                 if s in ("true", "false"):
-                    return s == "true"
+                    return taint(s == "true", ls) if FLOW.on else s == "true"
                 raise SiparRuntimeError("decode", f"cannot parse {snippet(v)} as Bool (use true/false)")
         if name in ("List", "Map") or name in self.tenv.records or name in self.tenv.enums:
             if isinstance(v, str):
@@ -909,8 +1413,8 @@ class Interp:
             k = kind_of(v)
             if k == name:
                 return v
-        if name == "None" and v is None:
-            return None
+        if name == "None" and is_none(v):
+            return v
         raise SiparRuntimeError("type", f"cannot convert {kind_of(v)} to {type_str(t)}")
 
     # ================================================================ calls
@@ -960,6 +1464,8 @@ class Interp:
                     raise err("type", f"unknown function {qn}", n)
             if c.name in MUTATORS:      # change the original container, never a labelled copy (SPEC §6)
                 recv, pls = self.place(o, env)
+                if FLOW.on and isinstance(recv, (list, dict)) and not FLOW.pc <= own_labels(recv):
+                    raise self._nsu(f"this {kind_of(recv)}", n)
             else:
                 recv, pls = self.eval(o, env), EMPTY
             if isinstance(recv, Record) and c.name in recv.fields:
@@ -975,6 +1481,55 @@ class Interp:
         return self.call_value(f, pos, named)
 
     def call_method_named(self, recv: Any, name: str, pos: list, named: dict) -> Any:
+        if FLOW.on:
+            return self._method_strict(recv, name, pos, named)
+        return self._method(recv, name, pos, named)
+
+    def _method_strict(self, recv: Any, name: str, pos: list, named: dict) -> Any:
+        extra = EMPTY
+        if type(recv) in (LBool, LNone):
+            extra, recv = extra | recv.labels, plain(recv)
+        pos2 = []
+        for x in pos:
+            if type(x) in (LBool, LNone):
+                extra, x = extra | x.labels, plain(x)
+            pos2.append(x)
+        named2 = {}
+        for k, x in named.items():
+            if type(x) in (LBool, LNone):
+                extra, x = extra | x.labels, plain(x)
+            named2[k] = x
+        pc0, cb0 = FLOW.pc, self._cb_vals
+        try:
+            if name in CALLBACK_METHODS and isinstance(recv, (list, RangeVal)):
+                fns = [x for x in (*pos2, *named2.values()) if isinstance(x, (Closure, FnRef, LFn, WidenFn))]
+                self._cb_vals = (recv, *(x for x in (*pos2, *named2.values()) if x not in fns))
+                P = labels_of(recv) if name == "sort_by" else top_labels(recv)
+                if not P <= FLOW.pc:            # how many calls run (and in which order) depends on P
+                    new = FLOW.pc | P
+                    for f in fns:
+                        self._pre_upgrade_callable(f, new)
+                    self._try_mark(new)
+                    FLOW.pc = new
+            r = self._method(recv, name, pos2, named2)
+        except SiparRuntimeError as e:
+            self._flow_err(e)
+            raise
+        finally:
+            raised = FLOW.pc - pc0
+            FLOW.pc = pc0 | self.tpc
+            self._cb_vals = cb0
+        if r is None or r is True or r is False or isinstance(r, (LBool, LNone, EnumVal)):
+            ls = raised | extra | labels_of(recv)
+            for x in (*pos2, *named2.values()):
+                ls = ls | labels_of(x)
+            r = taint(r, ls)
+        else:
+            r = taint(r, raised | extra)
+        self._fresh(r, (recv, *pos2, *named2.values()))
+        return r
+
+    def _method(self, recv: Any, name: str, pos: list, named: dict) -> Any:
         k = "Str" if isinstance(recv, str) else "List" if isinstance(recv, (list, RangeVal)) else \
             "Map" if isinstance(recv, dict) else kind_of(recv)
         sig = METHODS.get(k, {}).get(name)
@@ -1007,6 +1562,42 @@ class Interp:
         return out
 
     def call_builtin(self, name: str, pos: list, named: dict) -> Any:
+        if not FLOW.on or name in ("trust", "approve", "memory.save"):
+            return self._builtin(name, pos, named)
+        extra = EMPTY
+        pos2 = []
+        for x in pos:
+            if type(x) in (LBool, LNone):
+                extra, x = extra | x.labels, plain(x)
+            pos2.append(x)
+        named2 = {}
+        for k, x in named.items():
+            if type(x) in (LBool, LNone):
+                extra, x = extra | x.labels, plain(x)
+            named2[k] = x
+        if extra:                              # a decided Bool or none passed to an effect is labelled data
+            sig = FUNCTIONS[name]
+            check_sinks(name, self.bind_sig(name, sig, list(pos), {k: x for k, x in named.items() if k != "<type>"}))
+        try:
+            r = self._builtin(name, pos2, named2)
+        except SiparRuntimeError as e:
+            self._flow_err(e)
+            if extra:
+                e.flow = getattr(e, "flow", EMPTY) | extra
+            if FUNCTIONS[name].effects and e.kind not in NO_FLOW_KINDS:
+                e.flow = getattr(e, "flow", EMPTY) | {"untrusted:error"}
+            raise
+        if r is None or r is True or r is False or isinstance(r, (LBool, LNone, EnumVal)):
+            ls = extra
+            for x in (*pos2, *named2.values()):
+                ls = ls | labels_of(x)
+            r = taint(r, ls)
+        else:
+            r = taint(r, extra)
+        self._fresh(r, (*pos2, *named2.values()))
+        return r
+
+    def _builtin(self, name: str, pos: list, named: dict) -> Any:
         sig = FUNCTIONS[name]
         hidden = {"<type>": named.pop("<type>")} if "<type>" in named else {}
         args = self.bind_sig(name, sig, pos, named)
@@ -1084,6 +1675,18 @@ class Interp:
     def call_value(self, f: Any, pos: list, named: dict | None = None) -> Any:
         named = named or {}
         if isinstance(f, LFn):                  # a function picked with a labelled index labels its result
+            if FLOW.on and not f.labels <= FLOW.pc:
+                pc0 = FLOW.pc                   # which function runs depends on the labels (SPEC §6.2)
+                self._try_mark(pc0 | f.labels)
+                FLOW.pc = pc0 | f.labels
+                try:
+                    r = self.call_value(f.fn, pos, named)
+                except SiparRuntimeError as e:
+                    self._flow_err(e)
+                    raise
+                finally:
+                    FLOW.pc = pc0 | self.tpc
+                return taint(select(r, f.labels), f.labels)
             return select(self.call_value(f.fn, pos, named), f.labels)
         if isinstance(f, WidenFn):              # used as a wider fn type: widen the arguments and the result
             _, pplans, rplan = f.plan
@@ -1098,17 +1701,45 @@ class Interp:
             local = Env(f.env)
             for k, v in vals.items():
                 local.define(k, v)
+            fr = self._frame(f.body) if FLOW.on else None
+            pc_in = FLOW.pc
             self.enter()
             try:
                 r = self.eval(f.body, local)
             except ReturnSig as r_:
                 r = r_.value
+            except SiparRuntimeError as e:
+                if fr is not None:
+                    self._flow_err(e)
+                raise
             finally:
                 self.depth -= 1
-            return coerce(r, f.ret)
+                if fr is not None:
+                    rpc = (FLOW.pc | self.fpc) - pc_in
+                    self._unframe(fr)
+            r = coerce(r, f.ret)
+            return taint(r, rpc) if fr is not None else r
         raise SiparRuntimeError("type", f"{kind_of(f)} is not callable")
 
     def call_fn(self, decl: A.FnDecl, pos: list, named: dict) -> Any:
+        if not FLOW.on:
+            return self._call_fn(decl, pos, named)
+        body = self.mocks[decl.name][0].body if decl.name in self.mocks else decl.body if decl.kind == "fn" else None
+        fr = self._frame(body)
+        pc_in = FLOW.pc
+        try:
+            r = self._call_fn(decl, pos, named)
+            rpc = (FLOW.pc | self.fpc) - pc_in
+            return taint(r, rpc)
+        except SiparRuntimeError as e:
+            self._flow_err(e)
+            if decl.kind != "fn" and e.kind not in NO_FLOW_KINDS:   # a model's failure is its own (untrusted)
+                e.flow = getattr(e, "flow", EMPTY) | {f"untrusted:ai:{decl.name}"}
+            raise
+        finally:
+            self._unframe(fr)
+
+    def _call_fn(self, decl: A.FnDecl, pos: list, named: dict) -> Any:
         if decl.name in self.mocks:
             return self.call_mock(decl, pos, named)
         vals = self.bind_params(decl.name, decl.params, pos, named)
@@ -1434,11 +2065,12 @@ def _run_tests(program: A.Program, file: str, *, live: bool = False, record: boo
                 it = Interp(program, file, journal=journal, out=out, err_out=err_out, stdin=stdin, test_mode=True,
                             live=live or record, mock_script=mock_script, providers=providers)
                 try:
-                    it.init_globals()
-                    try:
-                        it.exec_block(t.body, Env(it.globals))
-                    except (ReturnSig, BreakSig, ContinueSig):
-                        pass                  # `return` ends the test early: the fixture check below still runs
+                    with it.flow():
+                        it.init_globals()
+                        try:
+                            it.exec_block(t.body, Env(it.globals))
+                        except (ReturnSig, BreakSig, ContinueSig):
+                            pass              # `return` ends the test early: the fixture check below still runs
                     if journal.unused():
                         raise SiparRuntimeError("replay", f"fixture {os.path.basename(fpath)} has {journal.unused()} "
                                                           "unused entr(ies); re-record with --record",

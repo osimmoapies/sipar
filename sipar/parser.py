@@ -142,6 +142,11 @@ class Parser:
         if attrs:
             doc = doc or t.doc
         k = self.tok.kind
+        if k == "ident" and self.tok.value == "strict" and self.peek().kind in ("newline", ";", "eof"):
+            self._no_attrs(attrs)
+            s = self.adv()
+            self.end_stmt()
+            return A.Strict(s.line, s.col)
         if k == "allow":
             self._no_attrs(attrs)
             return self.allow()
@@ -185,7 +190,7 @@ class Parser:
             return A.TestDecl(s.line, s.col, "".join(name.parts), body)
         if k == "var":
             raise self.err("top-level 'var' is not allowed", hint="use 'let' for constants; mutable state lives in functions")
-        raise self.err(f"expected an item (fn, ai fn, agent fn, type, enum, allow, let, test), found {self.describe(self.tok)}",
+        raise self.err(f"expected an item (fn, ai fn, agent fn, type, enum, allow, let, test, strict), found {self.describe(self.tok)}",
                        hint="statements must be inside a function, e.g. fn main() { ... }")
 
     def _no_attrs(self, attrs: list[A.Attribute]) -> None:

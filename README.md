@@ -102,7 +102,7 @@ the examples live in this repository.
 | **Cost and time report** | `sipar trace run.jsonl [--json]`: AI calls, tokens, usd, milliseconds and errors per function and per model. |
 | **Use from Python** | `prog = sipar.load("triage.sipar"); prog.call("classify", "text", model="mock")` — same checks and capabilities, plain Python values back. |
 | **Tests with mocks** | `test "name" { mock classify(t) => Verdict {...}; assert ... }` — `sipar test`. |
-| **Diagnostics for humans and LLMs** | Codes E1xx–E4xx with hints, `sipar check --json`, and `sipar spec` prints the full language reference (all of SPEC.md plus generated standard-library tables, about 66 KB) to put into an LLM prompt. |
+| **Diagnostics for humans and LLMs** | Codes E1xx–E4xx with hints, `sipar check --json`, and `sipar spec` prints the full language reference (all of SPEC.md plus generated standard-library tables, about 71 KB) to put into an LLM prompt. |
 | **Zero dependencies** | Python 3.12+ standard library only (CI runs 3.12, 3.13 and 3.14; an older Python stops with `sipar: needs Python 3.12 or newer`). |
 
 ## How you still get work done
@@ -192,9 +192,9 @@ model says and everything read from outside.
 
 **Does not stop:**
 
-- **Choices.** `Bool` and plain `enum` values are never labelled, and flows through `if` and `match` are not
-  tracked. Injected text can still push a model to pick another branch — one of the branches you wrote. Write
-  programs where every branch is acceptable.
+- **Choices (default mode).** `Bool` and plain `enum` values are never labelled, and flows through `if` and
+  `match` are not tracked. Injected text can still push a model to pick another branch — one of the branches
+  you wrote. Write programs where every branch is acceptable, or turn on strict mode (below).
 - **What the text says.** `print` shows untrusted text. Sipar keeps it out of actions; it does not judge
   whether it is true.
 - **Your own `trust`.** `trust(x, "reason")` is your code vouching for a value. A weak check before it is a
@@ -204,6 +204,15 @@ model says and everything read from outside.
 - **Side channels** such as timing or the number of calls.
 - **The operating system.** Sipar is an interpreter, not a sandbox: a command you allow with `allow shell`
   runs with your user's rights.
+
+
+**Strict mode.** Put `strict` at the top of a program (or set `SIPAR_STRICT=1`) and the runtime also tracks
+implicit flows: what a secret or a model's answer *decided*. `var a = false; if secret_test { a = true }`
+makes `a` secret; `if model_says_yes { http.get(url) }` is blocked until your code `trust`s or `approve`s the
+answer; an error that happens because of a secret cannot be caught (the catch would reveal it); an agent's
+model is not told whether a tool failed because of a secret. Writes the runtime cannot foresee stop the
+program instead of leaking (no-sensitive-upgrade). The rules and the known gaps (one bit through whether the
+program stops, timing) are in SPEC.md §6.2.
 
 How to report a hole: `SECURITY.md`.
 
@@ -239,7 +248,7 @@ server. Set `sipar.path` to `bin/sipar` (see `editors/vscode/README.md`).
 
 Version 0.1, alpha: the language can still change. Working today: lexer, parser, type/effect checker,
 interpreter, providers, journal/replay, MCP client, language server, CLI.
-1,800+ tests (unit, security, end-to-end; `python3 tools/ptest.py` runs them in parallel), mutation-tested checker and effect layer.
+1,900+ tests (unit, security, end-to-end; `python3 tools/ptest.py` runs them in parallel), mutation-tested checker and effect layer.
 CI runs them on Linux and macOS with Python 3.12, 3.13 and 3.14. Windows is not supported.
 Full reference: `SPEC.md`; error codes: `docs/ERRORS.md`.
 

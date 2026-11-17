@@ -655,7 +655,7 @@ def _printable(s: str) -> str:
 
 
 def trust(rt, value: Any, reason: Any) -> Any:
-    removed = untrusted_in(value)
+    removed = sorted(l for l in labels_of(value) if l.startswith("untrusted:"))    # not pc's (strict mode)
     rt.journal.effect("trust", {"reason": render(reason, redact=True), "removed": removed, "value": to_json(value, redact=True)},
                       lambda: None)
     return deep_strip(value, lambda l: not l.startswith("untrusted:"))

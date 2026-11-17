@@ -9,8 +9,8 @@ from typing import Any
 from .. import ast as A
 from ..errors import SiparRuntimeError
 from . import jsondeep
-from .values import (EMPTY, INT_TOO_LARGE, LONE_SURROGATE, MAX_INT_BITS, EnumVal, LDict, Record, has_lone_surrogate,
-                     new_list, with_labels, kind_of, is_num)
+from .values import (EMPTY, FLOW, INT_TOO_LARGE, LONE_SURROGATE, MAX_INT_BITS, EnumVal, LDict, Record,
+                     has_lone_surrogate, is_none, new_list, taint, with_labels, kind_of, is_num)
 
 PRIMS = {"Int", "Float", "Str", "Bool", "None"}
 ERROR_FIELDS = [("kind", A.TName(0, 0, "Str")), ("message", A.TName(0, 0, "Str"))]
@@ -203,14 +203,20 @@ def from_json(d: Any, t: A.TypeExpr | None, tenv: TypeEnv, labels: frozenset = E
     return _from_json(d, t, tenv, labels, path, form)
 
 
+def choice(v: Any, labels: frozenset) -> Any:
+    """A decoded Bool, none or enum value: in strict mode it carries the data's labels (which branch a program
+    takes on it depends on that data); outside strict mode it is the plain value."""
+    return taint(v, labels) if FLOW.on and labels else v
+
+
 def _from_json(d: Any, t: A.TypeExpr | None, tenv: TypeEnv, labels: frozenset, path: Any, form: str) -> Any:
     if t is None:
         if d is not None:
             _fail(path, f"expected null, got {_jtype(d)}")
-        return None
+        return choice(None, labels)
     if isinstance(t, A.TOptional):
         if d is None:
-            return None
+            return choice(None, labels)
         return _from_json(d, t.inner, tenv, labels, path, form)
     if isinstance(t, A.TFn):
         _fail(path, "cannot decode a function")
@@ -252,11 +258,11 @@ def _from_json(d: Any, t: A.TypeExpr | None, tenv: TypeEnv, labels: frozenset, p
     if n == "Bool":
         if not isinstance(d, bool):
             _fail(path, f"expected Bool, got {_jtype(d)}")
-        return d
+        return choice(d, labels)
     if n == "None":
         if d is not None:
             _fail(path, f"expected none, got {_jtype(d)}")
-        return None
+        return choice(None, labels)
     if n == "Any":
         return _any(d, labels)
     if n == "List":
@@ -280,7 +286,7 @@ def _from_json(d: Any, t: A.TypeExpr | None, tenv: TypeEnv, labels: frozenset, p
         for f, ft in tenv.records[n]:
             if f not in d:
                 if isinstance(ft, A.TOptional):
-                    out[f] = None
+                    out[f] = choice(None, labels)
                     continue
                 _fail(path, f"missing field '{f}' of {n}")
             out[f] = _from_json(d[f], ft, tenv, labels, Path(path, f".{f}"), form)
@@ -294,7 +300,7 @@ def _from_json(d: Any, t: A.TypeExpr | None, tenv: TypeEnv, labels: frozenset, p
                 _fail(path, f"{d[:40]!r} is not a variant of {n} ({names})")
             if v.fields:
                 _fail(path, f"variant {n}.{d} needs fields {[f for f, _ in v.fields]}")
-            return EnumVal(n, d)
+            return choice(EnumVal(n, d), labels)
         if isinstance(d, dict):
             ambiguous = tag_field_enum(variants.values())
             if ambiguous and form == "legacy":
@@ -315,11 +321,11 @@ def _from_json(d: Any, t: A.TypeExpr | None, tenv: TypeEnv, labels: frozenset, p
             for f, ft in v.fields:
                 if f not in body:
                     if isinstance(ft, A.TOptional):
-                        fields[f] = None
+                        fields[f] = choice(None, labels)
                         continue
                     _fail(path, f"missing field '{f}' of {n}.{tag}")
                 fields[f] = _from_json(body[f], ft, tenv, labels, Path(path, f".{f}"), form)
-            return EnumVal(n, tag, fields, ambiguous)
+            return choice(EnumVal(n, tag, fields, ambiguous), labels)
         _fail(path, f"expected {n} variant, got {_jtype(d)}")
     raise SiparRuntimeError("type", f"unknown type {n}")
 
@@ -333,6 +339,8 @@ def _any(d: Any, labels: frozenset) -> Any:
         return new_list([_any(x, labels) for x in d], labels)
     if isinstance(d, dict):
         return new_map({with_labels(k, labels): _any(x, labels) for k, x in d.items()}, labels)
+    if d is None or isinstance(d, bool):
+        return choice(d, labels)
     return with_labels(d, labels)
 
 
@@ -347,7 +355,7 @@ def coerce(v: Any, t: A.TypeExpr | None) -> Any:
     if t is None:
         return v
     if isinstance(t, A.TOptional):
-        return None if v is None else coerce(v, t.inner)
+        return v if is_none(v) else coerce(v, t.inner)
     if isinstance(t, A.TName) and t.name == "Float" and isinstance(v, int) and not isinstance(v, bool):
         try:
             f = float(v)
@@ -360,9 +368,9 @@ def coerce(v: Any, t: A.TypeExpr | None) -> Any:
 def conforms(v: Any, t: A.TypeExpr | None, tenv: TypeEnv) -> bool:
     """Shallow runtime check used for mock/tool results and decoded arguments."""
     if t is None:
-        return v is None
+        return is_none(v)
     if isinstance(t, A.TOptional):
-        return v is None or conforms(v, t.inner, tenv)
+        return is_none(v) or conforms(v, t.inner, tenv)
     if isinstance(t, A.TFn):
         return kind_of(v) == "fn"
     n = t.name

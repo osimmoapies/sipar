@@ -337,7 +337,12 @@ class TestDecl(Node):
     body: Block
 
 
-Item = Union[Allow, TypeDecl, EnumDecl, FnDecl, ConstDecl, TestDecl]
+@dataclass
+class Strict(Node):         # `strict`: implicit flows are tracked too (SPEC §6.2)
+    pass
+
+
+Item = Union[Allow, TypeDecl, EnumDecl, FnDecl, ConstDecl, TestDecl, Strict]
 
 
 @dataclass

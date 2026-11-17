@@ -10,7 +10,7 @@ from ..lexer import normalize_newlines
 from . import effects as E
 from . import jsondeep
 from . import memory as M
-from .values import (EMPTY, MAX_STR, STR_TOO_LARGE, RangeVal, check_int, check_mutable, dumps, equal, has_function, is_num, kind_of, label_written, labels_of,
+from .values import (EMPTY, MAX_STR, STR_TOO_LARGE, LBool, RangeVal, is_bool, check_int, check_mutable, dumps, equal, has_function, is_num, kind_of, label_written, labels_of,
                      mutated, new_list, own_labels, render, select, to_json, with_labels)
 
 MAX_ITEMS = 10_000_000
@@ -292,14 +292,16 @@ def m_list(rt, xs: list, name: str, args: list) -> Any:
     if name == "map":
         return new_list((call(args[0], [x]) for x in items()), own)
     if name == "filter":
-        out = []
+        out, picked = [], own
         for x in items():
             r = call(args[0], [x])
-            if r is not True and r is not False:
+            if not is_bool(r):
                 raise SiparRuntimeError("type", "filter: the function must return Bool")
+            if type(r) is LBool:        # strict mode: which items are kept depends on the test's labels
+                picked = picked | r.labels
             if r:
                 out.append(x)
-        return new_list(out, own)
+        return new_list(out, picked)
     if name == "reduce":
         acc = args[0]
         for x in items():
@@ -308,12 +310,14 @@ def m_list(rt, xs: list, name: str, args: list) -> Any:
     if name in ("any", "all"):
         for x in items():
             r = call(args[0], [x])
-            if r is not True and r is not False:
+            if not is_bool(r):
                 raise SiparRuntimeError("type", f"{name}: the function must return Bool")
+            if type(r) is LBool:        # strict mode: the next calls run only because of this answer
+                rt.raise_pc(r.labels, args[0])
             if name == "any" and r:
-                return True
+                return r
             if name == "all" and not r:
-                return False
+                return r
         return name == "all"
     if name == "join":
         sep = _str(args[0], "join")

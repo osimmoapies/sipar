@@ -115,6 +115,8 @@ test "review is parsed" {
   an `agent fn` also uses every effect of its tools. `print` needs no effect; `input` uses `io`.
 - `fn main()` (optionally `main(args: List[Str])`) is the entry point. It may use only allowed effects.
 - Top-level `let NAME = expr` defines a constant (pure expression).
+- A top-level `strict` item (or `SIPAR_STRICT=1` in the environment) turns on strict mode: implicit
+  flows through control flow are tracked too (§6.2). Without it the rules of §6.1 apply unchanged.
 - Attributes `@name(literal)` before `ai fn`/`agent fn`: `model`, `retries` (default 2), `temperature`,
   `max_steps` (agent, default 10), `system` (extra system text).
 - `@model("a | b | c")` is a **fallback chain**: models are tried left to right; the next one is tried only
@@ -268,6 +270,7 @@ so replay gives the same error; `memory.keys()` lists such a key and `memory.del
 In `sipar test` memory lives in RAM and starts empty in every test.
 
 ## 6. Information-flow rules
+### 6.1 Explicit flows (always on)
 - Labels: `untrusted:<source>` and `secret:<name>`. Sources: `ai fn` results, agent results, `http.*`
   results, `fs.read`, `shell.run`, `input`. Labels propagate through every operation, string
   interpolation, container construction, method results and `as` conversions.
@@ -356,7 +359,48 @@ In `sipar test` memory lives in RAM and starts empty in every test.
   untrusted (`taint`: an injected text must not choose which slot is overwritten); an untrusted key in
   `memory.load` is allowed and the loaded value gets the key's labels. The store file itself is trusted as
   much as the program: whoever can edit it can change stored values and labels.
-- Known limitation (documented): implicit flows through control flow are not tracked.
+- Without `strict`, implicit flows through control flow are not tracked (see §6.2).
+
+### 6.2 Strict mode: implicit flows
+With `strict` (a top-level item) or `SIPAR_STRICT=1`, the runtime also tracks *which labelled data decided
+what runs*. It keeps a program-counter label set `pc`: the labels of every condition the current code depends
+on — an `if` / `match` subject, a `while` condition, the list of a `for`, the left side of `and` / `or` / `??`,
+the test inside `filter` / `any` / `all` / `sort_by` / `map` / `reduce` callbacks, a function value chosen by
+labelled data, an earlier `return` / `break` / `continue` taken under a labelled condition, and an error that a
+labelled condition raised inside `try`. Then:
+- **Choice declassification is off for flows.** A comparison, `not`, `and`/`or`, a `Bool` or `none` result
+  and an enum value keep the labels of what produced them (`k == "abc"` with a secret `k` is a secret Bool).
+  A model's `Bool` or enum choice may still decide an effect, but only after `trust(x, "reason")` or
+  `approve(x, "question")` — the declassification is then visible in the code and in the journal.
+- **Every value written under `pc` carries `pc`:** assignments, fields, `xs[i] = v`, `push` and every other
+  changing method, values returned from a function whose result was decided by a labelled `return`, and loop
+  counters after a labelled `break`. A variable or container the code *may* change in a branch carries the
+  branch's labels on the path not taken as well (it is upgraded before the branch runs), so
+  `var a = false; if secret { a = true }` gives a secret `a` whichever way the test goes. The same holds for
+  containers changed through an alias or inside a called function (`add(xs, 1)` under a secret test labels
+  `xs`).
+- **Sinks check `pc` too.** `print`, `fs.write`, `http.*`, `shell.run`, `memory.save`, prompts and every other
+  sink of §6.1 reject a call made under a `pc` they would reject as an argument: `if secret_test { print("x") }`
+  is error kind `taint`, and so is `http.get(url)` under a model-decided test.
+- **No-sensitive-upgrade.** A write under `pc` that the upgrade above could not foresee (a variable or
+  container declared outside the labelled code and not visible in it) is error kind `taint`
+  "strict mode: cannot change … inside code decided by …", raised before the write. Declare the variable
+  inside that code, or give it its labelled value earlier.
+- **Errors.** In `catch e`, `e` and every value the handler produces carry the labels of the conditions that
+  decided the error (an untrusted test, `untrusted:error` for an effect that failed). An error whose occurrence
+  depends on a **secret** (a `fail` under a secret test, `k as Int` of a secret `k`, an index computed from a
+  secret) **cannot be caught**: it ends the program with its kind and the note "strict mode: whether this error
+  happens depends on «secret:NAME», so it cannot be caught". A tool of an `agent fn` that fails in such a way
+  ends the agent the same way: the model is not told whether the tool failed.
+- **Design goal** (termination-insensitive non-interference; tested, not machine-proved): two runs that differ
+  only in secret or untrusted inputs either produce the same public effects, or at least one of them stops
+  with a `taint` (or uncatchable) error before the effects differ.
+- **Known gaps (documented):** (1) *termination channel*: whether the program stops with an error can depend
+  on a secret (one bit per run, the usual price of a fail-stop monitor); (2) inside `try`, the path where an
+  effect *did not* fail is not labelled by the outside world that could have made it fail (the failing path
+  is, with `untrusted:error`); (3) which tool an `agent fn`'s model calls, and how many steps it takes, does
+  not raise `pc` (the agent's result is untrusted anyway); (4) whether a `memory` key exists is not labelled by
+  the conditions under which it was saved in an earlier run; (5) timing is not tracked.
 
 ## 7. Runtime: providers, budgets, journal
 - Model string `provider/model`: `openrouter/...`, `openai/...`, `gemini/...`, `local/...`, `mock`.
