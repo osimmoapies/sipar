@@ -81,7 +81,8 @@ fn f() {
 
 ### E110 — unexpected token
 The general syntax error: a missing token, a keyword used as a name, a statement at the top level,
-chained comparisons (`a < b < c`), a top-level `var`.
+chained comparisons (`a < b < c`), a top-level `var`, a pattern from another language (`None =>` would bind
+every value, so it is an error: write `none =>`; `Some(x) =>` → `none => ..., x => ...`).
 ```sipar
 fn f() -> Bool { 1 < 2 < 3 }
 ```
@@ -138,7 +139,8 @@ fn f() {
 ```
 
 ### E203 — unknown name
-Hints suggest the closest name.
+Hints suggest the closest name. Names from other languages get what Sipar writes instead: `None`/`null`/`nil`
+→ `none`, `True`/`False` → `true`/`false`, `Some(x)` → `x`, `Ok`/`Err` → `fail` and `try`.
 ```sipar
 fn f() -> Int {
     let count = 1

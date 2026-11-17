@@ -97,7 +97,21 @@ def ts(t: Ty) -> str:
     return "Int or Float" if t == NUM else str(t)
 
 
+_NONE_HINT = "Sipar writes the empty value as `none` (lower case)"
+# Names that other languages have and Sipar does not: a model or a person coming from Python/Rust/JS writes them,
+# and a plain "unknown name" hint does not say what to write instead.
+FOREIGN_NAMES = {
+    **dict.fromkeys(("None", "null", "Null", "NULL", "nil", "Nil", "undefined"), _NONE_HINT),
+    "True": "Sipar writes `true` (lower case)", "False": "Sipar writes `false` (lower case)",
+    "Some": "Sipar has no `Some(...)`: a `T?` value is the value itself or `none`, so write `x`, not `Some(x)`",
+    "Ok": "Sipar has no Result type: return the value; report errors with `fail(kind, message)`",
+    "Err": "Sipar has no Result type: raise with `fail(kind, message)`, catch with `try { } catch e { }`",
+}
+
+
 def similar(name: str, candidates) -> str:
+    if name in FOREIGN_NAMES:
+        return FOREIGN_NAMES[name]
     m = difflib.get_close_matches(name, sorted(set(candidates)), n=1, cutoff=0.6)
     return f"did you mean `{m[0]}`?" if m else ""
 

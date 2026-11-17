@@ -17,6 +17,19 @@ CAPS = {"ai", "net", "fs.read", "fs.write", "shell", "env", "secret", "time", "r
 COMPARE = {"==", "!=", "<", "<=", ">", ">=", "in"}
 
 
+# Pattern names from other languages (Python/Rust/JS). As a Sipar pattern `None` is a plain name that matches
+# EVERY value, so `None => a, x => b` silently always takes `a`; reject it with what to write instead.
+FOREIGN_PATTERNS = {
+    **dict.fromkeys(("None", "null", "Null", "NULL", "nil", "Nil", "undefined"),
+                    "write `none` (lower case) for the empty value, then a name for the rest: `none => ..., x => ...`"),
+    "True": "write `true` (lower case)", "False": "write `false` (lower case)",
+    "Some": "a `T?` value has no `Some(...)` wrapper: write `none => ...` first, then a plain name `x => ...` "
+            "gets the value",
+    **dict.fromkeys(("Ok", "Err"), "Sipar has no Result type: a failing call raises an error; catch it with "
+                                   "`try { ... } catch e { e.kind }`"),
+}
+
+
 class Parser:
     def __init__(self, toks: list[Token], file: str = "<input>"):
         self.toks = toks
@@ -820,6 +833,12 @@ class Parser:
             return A.PLit(t.line, t.col, lit)
         if t.kind == "ident":
             self.adv()
+            if self.at("("):
+                hint = FOREIGN_PATTERNS.get(t.value, f"variant patterns name their enum: `MyEnum.{t.value}(...)`")
+                raise self.err(f"`{t.value}(...)` is not a Sipar pattern", t, hint=hint)
+            if t.value in FOREIGN_PATTERNS:
+                raise self.err(f"`{t.value}` is not a Sipar pattern: it would bind every value to a new name "
+                               f"`{t.value}`", t, hint=FOREIGN_PATTERNS[t.value])
             if self.at("."):
                 self.adv()
                 v = self.expect_ident("variant name").value
