@@ -140,5 +140,46 @@ class T_ForeignNames(unittest.TestCase):
         self.assertIn("did you mean `count`?", d[0].hint)
 
 
+class T_ModelMistakes(unittest.TestCase):
+    """Mistakes the AgentDojo planner (gpt-oss-120b) made, each with the hint that says what to write."""
+
+    def one(self, src):
+        d = diag(src)
+        self.assertEqual(len(d), 1, d)
+        return d[0]
+
+    def test_generic_fn(self):
+        for br in ("[T]", "<T>"):
+            e = self.one(f"fn keep{br}(v: Int) -> Int {{ v }}\nfn main() {{ print(keep(1)) }}\n")
+            self.assertIn("not generic", e.message)
+            self.assertIn("fn keep(value: Str)", e.hint)
+
+    def test_uses_before_return_type(self):
+        e = self.one("allow io\nfn ask(v: Str) uses io -> Str { approve(v, \"ok?\") }\n"
+                     "fn main() uses io { print(ask(\"x\")) }\n")
+        self.assertIn("return type comes before `uses`", e.message)
+        self.assertIn("fn ask(...) -> T uses io", e.hint)
+
+    def test_right_order_still_works(self):
+        self.assertEqual(diag("allow io\nfn ask(v: Str) -> Str uses io { approve(v, \"ok?\") }\n"
+                              "fn main() uses io { print(ask(\"x\")) }\n"), [])
+
+    def test_some_space_name_pattern(self):
+        for w in ("some", "Some"):
+            e = self.one(match_with(f"{w} t => t,"))
+            self.assertIn(f"`{w} t` is not a Sipar pattern", e.message)
+            self.assertIn("none =>", e.hint)
+
+    def test_list_method_on_str(self):
+        e = self.one('fn main() {\n    let s = "a"\n    print(s.filter(fn(c: Str) => true))\n}\n')
+        self.assertEqual(e.code, "E205")
+        self.assertIn("List method and this value is a Str", e.hint)
+        self.assertIn("let xs: List[Item]", e.hint)
+
+    def test_unknown_str_method_keeps_old_hint(self):
+        e = self.one('fn main() {\n    let s = "a"\n    print(s.uppr())\n}\n')
+        self.assertIn("did you mean `upper`?", e.hint)
+
+
 if __name__ == "__main__":
     unittest.main()

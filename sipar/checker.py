@@ -1723,8 +1723,12 @@ class Checker:
         sig = METHODS[kind].get(c.name)
         if sig is None:
             self.loose_args(call.args)
-            self.err("E205", c, f"{kind} has no method `{c.name}`",
-                     similar(c.name, METHODS[kind]) or f"{kind} methods: {', '.join(METHODS[kind])}")
+            if kind == "Str" and c.name in METHODS["List"]:
+                hint = (f"`{c.name}` is a List method and this value is a Str: an MCP tool result or a model reply "
+                        "is Str unless you give its type, e.g. `let xs: List[Item] = mcp.server.tool()`")
+            else:
+                hint = similar(c.name, METHODS[kind]) or f"{kind} methods: {', '.join(METHODS[kind])}"
+            self.err("E205", c, f"{kind} has no method `{c.name}`", hint)
             return UNKNOWN
         b = {"T": rt.elem} if isinstance(rt, (ListT, MapT)) else {}
         params = [(n, from_stdlib(t)) for n, t in sig.params]

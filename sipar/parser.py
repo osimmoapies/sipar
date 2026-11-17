@@ -332,6 +332,9 @@ class Parser:
         s = start or self.tok
         self.expect("fn")
         name = self.expect_ident("function name").value
+        if self.at("[", "<"):
+            raise self.err("Sipar functions are not generic", hint=f"give each parameter a concrete type: "
+                           f"fn {name}(value: Str) ..., or write one fn per type")
         ps = self.params()
         ret = None
         if self.at("->"):
@@ -346,6 +349,9 @@ class Parser:
             while self.at(","):
                 self.adv()
                 uses.append(self.cap_name())
+            if self.at("->") and ret is None:
+                raise self.err("the return type comes before `uses`",
+                               hint=f"fn {name}(...) -> T uses {', '.join(uses)} {{ ... }}")
         if kind == "fn":
             body = self.block()
             self.end_stmt()
@@ -836,6 +842,9 @@ class Parser:
             if (t.value in ("Option", "Optional", "Maybe") and self.at(".")
                     and self.peek().kind == "none"):     # `none` is a keyword: never a real variant
                 raise self.err(f"`{t.value}` is not a Sipar type: a `T?` value is the value itself or `none`", t,
+                               hint=FOREIGN_PATTERNS["Some"])
+            if t.value in ("some", "Some") and self.at("ident"):
+                raise self.err(f"`{t.value} {self.tok.value}` is not a Sipar pattern", t,
                                hint=FOREIGN_PATTERNS["Some"])
             if self.at("("):
                 hint = FOREIGN_PATTERNS.get(t.value.capitalize() if t.value in ("some", "ok", "err") else t.value,
