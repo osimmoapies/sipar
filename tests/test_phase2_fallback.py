@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from rt_helpers import Prog, ROOT  # noqa: F401
@@ -371,13 +372,17 @@ class TestRateRetry(Base):
             return None, j, e
 
     def test_429_retried_with_retry_after(self):
-        t0 = time.monotonic()
-        out, j, e = self.go({"m": ("flaky", 429, 2, "0", '"after retry"')})
+        # The waits are recorded, not timed: a wall-clock bound failed on macOS CI runners (35 s of one-time
+        # start-up cost in the first test of the process), while the retries themselves were right.
+        waits: list = []
+        real = time.sleep
+        with mock.patch("sipar.runtime.providers.time.sleep", side_effect=lambda s: (waits.append(s), real(s))):
+            out, j, e = self.go({"m": ("flaky", 429, 2, "0", '"after retry"')})
         self.assertIsNone(e)
         self.assertEqual(out.strip(), "after retry")
         self.assertEqual(self.srv.hits, ["m", "m", "m"])
         self.assertEqual(len(self.ai_entries(j)), 1)          # one journal entry: the retries are inside it
-        self.assertLess(time.monotonic() - t0, 3)
+        self.assertEqual(waits, [0.0, 0.0])                   # Retry-After: 0 is followed, no backoff
 
     def test_503_retried(self):
         out, j, e = self.go({"m": ("flaky", 503, 1, "0", '"ok503"')})
@@ -400,11 +405,12 @@ class TestRateRetry(Base):
         self.assertEqual(self.srv.hits, ["m"])
 
     def test_wait_past_deadline_not_retried(self):
-        t0 = time.monotonic()
-        out, j, e = self.go({"m": ("flaky", 429, 1, "30", '"x"')}, timeout="2")
+        waits: list = []
+        with mock.patch("sipar.runtime.providers.time.sleep", side_effect=waits.append):
+            out, j, e = self.go({"m": ("flaky", 429, 1, "30", '"x"')}, timeout="2")
         self.assertIn("HTTP 429", str(e))
         self.assertEqual(self.srv.hits, ["m"])
-        self.assertLess(time.monotonic() - t0, 2)
+        self.assertEqual(waits, [])                           # a 30 s wait would pass the 2 s deadline
 
     def test_backoff_without_retry_after(self):
         t0 = time.monotonic()
