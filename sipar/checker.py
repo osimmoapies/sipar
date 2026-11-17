@@ -106,6 +106,8 @@ FOREIGN_NAMES = {
     "Some": "Sipar has no `Some(...)`: a `T?` value is the value itself or `none`, so write `x`, not `Some(x)`",
     "Ok": "Sipar has no Result type: return the value; report errors with `fail(kind, message)`",
     "Err": "Sipar has no Result type: raise with `fail(kind, message)`, catch with `try { } catch e { }`",
+    **dict.fromkeys(("Option", "Optional", "Maybe"), "Sipar has no Option type: a `T?` value is the value itself "
+                    "or `none`; match it with `none => ..., x => ...`"),
 }
 
 

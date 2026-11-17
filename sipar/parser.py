@@ -833,8 +833,13 @@ class Parser:
             return A.PLit(t.line, t.col, lit)
         if t.kind == "ident":
             self.adv()
+            if (t.value in ("Option", "Optional", "Maybe") and self.at(".")
+                    and self.peek().kind == "none"):     # `none` is a keyword: never a real variant
+                raise self.err(f"`{t.value}` is not a Sipar type: a `T?` value is the value itself or `none`", t,
+                               hint=FOREIGN_PATTERNS["Some"])
             if self.at("("):
-                hint = FOREIGN_PATTERNS.get(t.value, f"variant patterns name their enum: `MyEnum.{t.value}(...)`")
+                hint = FOREIGN_PATTERNS.get(t.value.capitalize() if t.value in ("some", "ok", "err") else t.value,
+                                            f"variant patterns name their enum: `MyEnum.{t.value}(...)`")
                 raise self.err(f"`{t.value}(...)` is not a Sipar pattern", t, hint=hint)
             if t.value in FOREIGN_PATTERNS:
                 raise self.err(f"`{t.value}` is not a Sipar pattern: it would bind every value to a new name "

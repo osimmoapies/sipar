@@ -57,6 +57,43 @@ class T_ForeignPatterns(unittest.TestCase):
             self.assertIn(f"`{n}(...)` is not a Sipar pattern", e.message)
             self.assertIn("try", e.hint)
 
+    def test_lower_case_some_ok_err_call_pattern(self):
+        self.assertIn("none =>", self.one("some(t) => t,").hint)
+        self.assertIn("try", self.one("ok(t) => 1,").hint)
+        self.assertIn("try", self.one("err(t) => 1,").hint)
+
+    def test_Option_dot_none_pattern(self):
+        for arm in ("Option.none => 0,", "Optional.none => 0,", "Maybe.none => 0,"):
+            e = self.one(arm)
+            self.assertIn("is not a Sipar type", e.message)
+            self.assertIn("none =>", e.hint)
+
+    def test_Option_dot_some_pattern_is_an_unknown_enum_with_a_hint(self):
+        for arm in ("Option.some(t) => t,", "Optional.Some(t) => t,", "Maybe.x => 0,"):
+            d = diag(match_with(arm))
+            self.assertIn("E204", [x.code for x in d], d)
+            self.assertTrue(any("Sipar has no Option type" in x.hint for x in d), d)
+
+    def test_a_user_enum_called_Option_still_works(self):
+        src = """
+enum Option { yes(v: Int), no }
+fn main() {
+    let o = Option.yes(1)
+    print(match o { Option.yes(v) => v, Option.no => 0 })
+}
+"""
+        self.assertEqual(diag(src), [])
+
+    def test_a_user_enum_called_like_a_foreign_one_still_works(self):
+        src = """
+enum Opt { some(v: Int), nothing }
+fn main() {
+    let o = Opt.some(1)
+    print(match o { Opt.some(v) => v, Opt.nothing => 0 })
+}
+"""
+        self.assertEqual(diag(src), [])
+
     def test_other_call_pattern_names_the_enum(self):
         e = self.one("Foo(t) => 1,")
         self.assertIn("`MyEnum.Foo(...)`", e.hint)
